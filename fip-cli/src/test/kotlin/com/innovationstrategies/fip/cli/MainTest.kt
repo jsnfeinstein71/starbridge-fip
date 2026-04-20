@@ -77,6 +77,76 @@ class MainTest {
         assertTrue(result.out.contains("provenance shardId=ephemeral type=MEMORY_EPHEMERAL decision=EXCLUDED"))
     }
 
+    @Test
+    fun `write-back creates a replacement shard in storage`() {
+        val store = Files.createTempDirectory("fip-cli-test").toString()
+        runSave(store, "prior-core", "subject-1", "IDENTITY_CORE")
+
+        val writeBack = runWriteBack(store)
+        val list = run("list-shards", "--store", store, "--subject", "subject-1")
+
+        assertEquals(0, writeBack.exitCode)
+        assertTrue(writeBack.out.contains("createdCount=1"))
+        assertTrue(list.out.contains("count=1"))
+        assertTrue(list.out.contains("payload=updated payload"))
+        assertTrue(list.out.contains("tags=write-back"))
+    }
+
+    @Test
+    fun `write-back deletes prior shard ids when replaced`() {
+        val store = Files.createTempDirectory("fip-cli-test").toString()
+        runSave(store, "prior-core", "subject-1", "IDENTITY_CORE")
+
+        val writeBack = runWriteBack(store)
+        val loadPrior = run("load-shard", "--store", store, "--id", "prior-core")
+
+        assertEquals(0, writeBack.exitCode)
+        assertTrue(writeBack.out.contains("deleted id=prior-core"))
+        assertTrue(loadPrior.out.contains("not-found id=prior-core"))
+    }
+
+    @Test
+    fun `write-back summary includes created replaced and deleted counts`() {
+        val store = Files.createTempDirectory("fip-cli-test").toString()
+        runSave(store, "prior-core", "subject-1", "IDENTITY_CORE")
+
+        val writeBack = runWriteBack(store)
+
+        assertEquals(0, writeBack.exitCode)
+        assertTrue(writeBack.out.contains("requestId=request-1"))
+        assertTrue(writeBack.out.contains("subjectId=subject-1"))
+        assertTrue(writeBack.out.contains("createdCount=1"))
+        assertTrue(writeBack.out.contains("replacedCount=1"))
+        assertTrue(writeBack.out.contains("deletedCount=1"))
+        assertTrue(writeBack.out.contains("wasBounded=false"))
+        assertTrue(writeBack.out.contains("created id=request-1-"))
+        assertTrue(writeBack.out.contains("deleted id=prior-core"))
+    }
+
+    @Test
+    fun `write-back explicit replace-id path works`() {
+        val store = Files.createTempDirectory("fip-cli-test").toString()
+        runSave(store, "replace-me", "subject-1", "IDENTITY_PREFS")
+        runSave(store, "keep-me", "subject-1", "IDENTITY_PREFS")
+
+        val writeBack = runWriteBack(
+            store = store,
+            type = "IDENTITY_PREFS",
+            extraArgs = arrayOf("--replace-id", "replace-me")
+        )
+        val loadReplaced = run("load-shard", "--store", store, "--id", "replace-me")
+        val loadKept = run("load-shard", "--store", store, "--id", "keep-me")
+        val list = run("list-shards", "--store", store, "--subject", "subject-1")
+
+        assertEquals(0, writeBack.exitCode)
+        assertTrue(writeBack.out.contains("replacedCount=1"))
+        assertTrue(writeBack.out.contains("deleted id=replace-me"))
+        assertTrue(loadReplaced.out.contains("not-found id=replace-me"))
+        assertTrue(loadKept.out.contains("shard id=keep-me"))
+        assertTrue(list.out.contains("count=2"))
+        assertTrue(list.out.contains("payload=updated payload"))
+    }
+
     private fun runSave(
         store: String,
         id: String,
@@ -93,6 +163,27 @@ class MainTest {
             "--payload", "payload for $id",
             "--source", "cli-test",
             "--observed-at", "2026-04-20T00:00:00Z"
+        )
+
+    private fun runWriteBack(
+        store: String,
+        type: String = "IDENTITY_CORE",
+        extraArgs: Array<String> = emptyArray()
+    ): CliRun =
+        run(
+            *arrayOf(
+                "write-back",
+                "--store", store,
+                "--request-id", "request-1",
+                "--subject", "subject-1",
+                "--task-type", "cli-test",
+                "--surface", "terminal",
+                "--type", type,
+                "--payload", "updated payload",
+                "--source", "cli-test",
+                "--tag", "write-back"
+            ),
+            *extraArgs
         )
 
     private fun run(vararg args: String): CliRun {

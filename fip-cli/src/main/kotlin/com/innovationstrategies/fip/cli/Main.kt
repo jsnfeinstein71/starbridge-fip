@@ -8,6 +8,8 @@ import com.innovationstrategies.fip.core.domain.ReconstructionPolicy
 import com.innovationstrategies.fip.core.domain.ReconstructionRequest
 import com.innovationstrategies.fip.core.domain.ShardType
 import com.innovationstrategies.fip.core.reconstruction.FipReconstructionEngine
+import com.innovationstrategies.fip.core.writeback.FipWriteBackEngine
+import com.innovationstrategies.fip.core.writeback.IdentityUpdateRequest
 import com.innovationstrategies.fip.storage.file.FileIdentityShardRepository
 import java.io.PrintStream
 import java.nio.file.Path
@@ -31,6 +33,7 @@ fun runCli(args: Array<String>, out: PrintStream, err: PrintStream): Int {
             "list-shards" -> listShards(args.drop(1), out)
             "delete-shard" -> deleteShard(args.drop(1), out)
             "reconstruct" -> reconstruct(args.drop(1), out)
+            "write-back" -> writeBack(args.drop(1), out)
             "version" -> {
                 out.println("FIP CLI v${FipVersion.VALUE}")
                 0
@@ -145,8 +148,55 @@ private fun reconstruct(args: List<String>, out: PrintStream): Int {
     return 0
 }
 
+private fun writeBack(args: List<String>, out: PrintStream): Int {
+    val options = parseOptions(args)
+    val repository = repositoryFor(options)
+    val replaceShardIds = options.values("replace-id").map { IdentityShardId(it) }.toSet()
+    val request = IdentityUpdateRequest(
+        requestId = options.required("request-id"),
+        subjectId = IdentitySubjectId(options.required("subject")),
+        taskType = options.required("task-type"),
+        surface = options.required("surface"),
+        shardType = ShardType.valueOf(options.required("type")),
+        payload = options.required("payload"),
+        source = options.required("source"),
+        replaceShardIds = replaceShardIds,
+        tags = options.values("tag").toSet() + options.optional("tags").csvValues(),
+        maxReplacementSourceShards = options.optional("max-replacement-source-shards")?.toInt() ?: 16,
+        maxPayloadBytes = options.optional("max-payload-bytes")?.toInt(),
+        allowSystemMeta = options.flag("allow-system-meta")
+    )
+    val availableShards = availableShardsForWriteBack(repository, request)
+    val result = FipWriteBackEngine().writeBack(request, availableShards)
+
+    result.plan.replacementShards.forEach { repository.save(it) }
+    result.deletedShardIds.forEach { repository.delete(it) }
+
+    out.println("requestId=${result.requestId}")
+    out.println("subjectId=${result.subjectId.value}")
+    out.println("createdCount=${result.createdShardIds.size}")
+    out.println("replacedCount=${result.replacedShardIds.size}")
+    out.println("deletedCount=${result.deletedShardIds.size}")
+    out.println("wasBounded=${result.wasBounded}")
+    result.createdShardIds.sortedBy { it.value }.forEach { out.println("created id=${it.value}") }
+    result.deletedShardIds.sortedBy { it.value }.forEach { out.println("deleted id=${it.value}") }
+    return 0
+}
+
 private fun repositoryFor(options: CliOptions): FileIdentityShardRepository =
     FileIdentityShardRepository(Path.of(options.required("store")))
+
+private fun availableShardsForWriteBack(
+    repository: FileIdentityShardRepository,
+    request: IdentityUpdateRequest
+): List<IdentityShard> {
+    val shardsById = linkedMapOf<IdentityShardId, IdentityShard>()
+    repository.listForSubject(request.subjectId).forEach { shardsById[it.id] = it }
+    request.replaceShardIds.forEach { id ->
+        repository.load(id)?.let { shardsById[it.id] = it }
+    }
+    return shardsById.values.toList()
+}
 
 private fun printShard(out: PrintStream, shard: IdentityShard) {
     out.println(
@@ -209,4 +259,5 @@ private fun printUsage(out: PrintStream) {
     out.println("  list-shards --store <dir> --subject <subject>")
     out.println("  delete-shard --store <dir> --id <id>")
     out.println("  reconstruct --store <dir> --request-id <id> --subject <subject> --task-type <type> --surface <surface> --max-shards <n> [--max-payload-bytes <n>] [--allowed-types A,B] [--excluded-types A,B] [--allow-system-meta]")
+    out.println("  write-back --store <dir> --request-id <id> --subject <subject> --task-type <type> --surface <surface> --type <ShardType> --payload <text> --source <source> [--replace-id <id>] [--tag <tag>] [--tags a,b] [--max-replacement-source-shards <n>] [--max-payload-bytes <n>] [--allow-system-meta]")
 }
