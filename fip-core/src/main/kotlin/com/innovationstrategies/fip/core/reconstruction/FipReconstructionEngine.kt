@@ -128,5 +128,6 @@ class FipReconstructionEngine(
             ShardSelectionSkipReason.EXPLICITLY_EXCLUDED -> ProvenanceReason.EXPLICITLY_EXCLUDED
             ShardSelectionSkipReason.TYPE_NOT_ALLOWED -> ProvenanceReason.TYPE_NOT_ALLOWED
             ShardSelectionSkipReason.OUTSIDE_BOUND -> ProvenanceReason.OUTSIDE_BOUND
+            ShardSelectionSkipReason.NOT_IN_GRAPH_SELECTION -> ProvenanceReason.TYPE_NOT_ALLOWED
         }
 }

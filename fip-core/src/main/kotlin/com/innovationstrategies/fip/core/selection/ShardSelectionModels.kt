@@ -43,7 +43,8 @@ enum class ShardSelectionSkipReason {
     SYSTEM_META_DENIED,
     EXPLICITLY_EXCLUDED,
     TYPE_NOT_ALLOWED,
-    OUTSIDE_BOUND
+    OUTSIDE_BOUND,
+    NOT_IN_GRAPH_SELECTION
 }
 
 interface ShardSelector {
