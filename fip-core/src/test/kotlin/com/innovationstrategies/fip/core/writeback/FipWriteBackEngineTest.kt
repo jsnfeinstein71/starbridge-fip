@@ -3,6 +3,9 @@ package com.innovationstrategies.fip.core.writeback
 import com.innovationstrategies.fip.core.domain.IdentityShard
 import com.innovationstrategies.fip.core.domain.IdentityShardId
 import com.innovationstrategies.fip.core.domain.IdentitySubjectId
+import com.innovationstrategies.fip.core.domain.ContentProtection
+import com.innovationstrategies.fip.core.domain.ProtectedShardContent
+import com.innovationstrategies.fip.core.domain.PlaceholderEncryptedContentProtection
 import com.innovationstrategies.fip.core.domain.ShardType
 import java.time.Clock
 import java.time.Instant
@@ -57,6 +60,52 @@ class FipWriteBackEngineTest {
 
         assertEquals(generatedShardId, result.plan.replacementShards.single().id)
         assertEquals(setOf(generatedShardId), result.createdShardIds)
+    }
+
+    @Test
+    fun `content protection is injectable and used for replacement shards`() {
+        val prior = shard("prior-core", subjectId, ShardType.IDENTITY_CORE)
+        val protectedEngine = FipWriteBackEngine(
+            clock = Clock.fixed(decidedAt, ZoneOffset.UTC),
+            shardIdGenerator = ShardIdGenerator { IdentityShardId("protected-replacement") },
+            contentProtection = object : ContentProtection {
+                override fun protect(plaintext: String): ProtectedShardContent =
+                    ProtectedShardContent.Plaintext("protected::$plaintext")
+
+                override fun expose(content: ProtectedShardContent): String =
+                    content.value
+            }
+        )
+
+        val result = protectedEngine.writeBack(
+            request = request(payload = "updated payload"),
+            existingShards = listOf(prior)
+        )
+
+        val replacement = result.plan.replacementShards.single()
+        assertEquals("protected::updated payload", replacement.payload)
+        assertEquals("protected::updated payload", replacement.protectedContent.value)
+        assertEquals(setOf(IdentityShardId("protected-replacement")), result.createdShardIds)
+    }
+
+    @Test
+    fun `placeholder encrypted protection creates replacement shard without exposing plaintext payload`() {
+        val prior = shard("prior-core", subjectId, ShardType.IDENTITY_CORE)
+        val protectedEngine = FipWriteBackEngine(
+            clock = Clock.fixed(decidedAt, ZoneOffset.UTC),
+            shardIdGenerator = ShardIdGenerator { IdentityShardId("encrypted-replacement") },
+            contentProtection = PlaceholderEncryptedContentProtection
+        )
+
+        val result = protectedEngine.writeBack(
+            request = request(payload = "updated payload"),
+            existingShards = listOf(prior)
+        )
+
+        val replacement = result.plan.replacementShards.single()
+        assertEquals(ProtectedShardContent.PROTECTED_PAYLOAD_PLACEHOLDER, replacement.payload)
+        assertTrue(replacement.protectedContent is ProtectedShardContent.EncryptedPayload)
+        assertEquals(setOf(IdentityShardId("encrypted-replacement")), result.createdShardIds)
     }
 
     @Test

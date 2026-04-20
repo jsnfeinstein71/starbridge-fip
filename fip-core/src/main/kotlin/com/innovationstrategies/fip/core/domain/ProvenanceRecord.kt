@@ -37,5 +37,6 @@ enum class ProvenanceReason(
     SYSTEM_META_DENIED(supportsInclusion = false, supportsExclusion = true),
     OUTSIDE_BOUND(supportsInclusion = false, supportsExclusion = true),
     PAYLOAD_LIMIT_EXCEEDED(supportsInclusion = false, supportsExclusion = true),
+    CONTENT_NOT_EXPOSABLE(supportsInclusion = false, supportsExclusion = true),
     SUBJECT_MISMATCH(supportsInclusion = false, supportsExclusion = true)
 }

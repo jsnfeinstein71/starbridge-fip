@@ -36,7 +36,7 @@ class FileIdentityShardIntegrityCheckerTest {
     fun `missing required field is reported`() {
         val root = Files.createTempDirectory("fip-integrity-test")
         writeShardFile(
-            root.resolve("missing-payload.shard.properties"),
+            root.resolve("missing-content-value.shard.properties"),
             """
             formatVersion=1
             id=shard-1
@@ -45,6 +45,8 @@ class FileIdentityShardIntegrityCheckerTest {
             version=1
             source=test-source
             observedAt=2026-04-20T00:00:00Z
+            contentMode=PLAINTEXT
+            contentAlgorithm=PLAINTEXT-DEVELOPMENT
             tagCount=0
             """.trimIndent()
         )
@@ -80,7 +82,9 @@ class FileIdentityShardIntegrityCheckerTest {
             subjectId=subject-1
             type=NOT_A_SHARD_TYPE
             version=0
-            payload=
+            contentMode=NOT_A_CONTENT_MODE
+            contentValue=
+            contentAlgorithm=
             source=
             observedAt=not-an-instant
             tagCount=1
@@ -98,6 +102,32 @@ class FileIdentityShardIntegrityCheckerTest {
         assertTrue(record.hasIssue(ShardValidationIssueCode.INVALID_SOURCE))
         assertTrue(record.hasIssue(ShardValidationIssueCode.INVALID_OBSERVED_AT))
         assertTrue(record.hasIssue(ShardValidationIssueCode.INVALID_TAGS))
+    }
+
+    @Test
+    fun `encrypted placeholder content passes file integrity validation`() {
+        val root = Files.createTempDirectory("fip-integrity-test")
+        writeShardFile(
+            root.resolve("encrypted-placeholder.shard.properties"),
+            """
+            formatVersion=1
+            id=encrypted-shard
+            subjectId=subject-1
+            type=IDENTITY_CORE
+            version=1
+            source=test-source
+            observedAt=2026-04-20T00:00:00Z
+            contentMode=ENCRYPTED
+            contentValue=placeholder\:17\:1234
+            contentAlgorithm=FIP-PLACEHOLDER-NO-CRYPTO
+            tagCount=0
+            """.trimIndent()
+        )
+
+        val result = FileIdentityShardIntegrityChecker(root).check()
+
+        assertTrue(result.isValid)
+        assertEquals(1, result.validRecordCount)
     }
 
     @Test
@@ -132,9 +162,11 @@ class FileIdentityShardIntegrityCheckerTest {
         subjectId=subject-1
         type=IDENTITY_CORE
         version=1
-        payload=payload
         source=test-source
         observedAt=2026-04-20T00:00:00Z
+        contentMode=PLAINTEXT
+        contentValue=payload
+        contentAlgorithm=PLAINTEXT-DEVELOPMENT
         tagCount=0
         """.trimIndent()
 

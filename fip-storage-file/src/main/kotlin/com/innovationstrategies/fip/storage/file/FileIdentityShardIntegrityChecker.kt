@@ -3,6 +3,8 @@ package com.innovationstrategies.fip.storage.file
 import com.innovationstrategies.fip.core.domain.IdentityShard
 import com.innovationstrategies.fip.core.domain.IdentityShardId
 import com.innovationstrategies.fip.core.domain.IdentitySubjectId
+import com.innovationstrategies.fip.core.domain.ProtectedShardContent
+import com.innovationstrategies.fip.core.domain.ProtectedShardContentMode
 import com.innovationstrategies.fip.core.domain.ShardType
 import com.innovationstrategies.fip.core.integrity.IntegrityCheckResult
 import com.innovationstrategies.fip.core.integrity.ShardValidationIssue
@@ -67,11 +69,7 @@ class FileIdentityShardIntegrityChecker(
         val shardType = validateShardType(properties, issues)
         val version = validateVersion(properties, issues)
         val observedAt = validateObservedAt(properties, issues)
-
-        val payload = properties.getProperty("payload")
-        if (payload != null && payload.isBlank()) {
-            issues += issue(ShardValidationIssueCode.INVALID_PAYLOAD, "payload must not be blank.")
-        }
+        val protectedContent = validateContent(properties, issues)
 
         val source = properties.getProperty("source")
         if (source != null && source.isBlank()) {
@@ -79,14 +77,14 @@ class FileIdentityShardIntegrityChecker(
         }
 
         if (shardId != null && subjectId != null && shardType != null && version != null &&
-            payload != null && source != null && observedAt != null
+            protectedContent != null && source != null && observedAt != null
         ) {
             validateDomainModel(
                 shardId = shardId,
                 subjectId = subjectId,
                 shardType = shardType,
                 version = version,
-                payload = payload,
+                protectedContent = protectedContent,
                 source = source,
                 observedAt = observedAt,
                 tags = tagValues,
@@ -203,12 +201,49 @@ class FileIdentityShardIntegrityChecker(
             }
     }
 
+    private fun validateContent(
+        properties: Properties,
+        issues: MutableList<ShardValidationIssue>
+    ): ProtectedShardContent? {
+        val rawContentMode = properties.getProperty("contentMode") ?: return null
+        val contentMode = runCatching { ProtectedShardContentMode.valueOf(rawContentMode) }
+            .getOrElse {
+                issues += issue(ShardValidationIssueCode.INVALID_PAYLOAD, "Invalid shard content mode: $rawContentMode.")
+                null
+            } ?: return null
+
+        val contentValue = properties.getProperty("contentValue") ?: return null
+        if (contentValue.isBlank()) {
+            issues += issue(ShardValidationIssueCode.INVALID_PAYLOAD, "contentValue must not be blank.")
+        }
+        val contentAlgorithm = properties.getProperty("contentAlgorithm") ?: return null
+        if (contentAlgorithm.isBlank()) {
+            issues += issue(ShardValidationIssueCode.INVALID_PAYLOAD, "contentAlgorithm must not be blank.")
+        }
+
+        return runCatching {
+            when (contentMode) {
+                ProtectedShardContentMode.PLAINTEXT -> ProtectedShardContent.Plaintext(contentValue)
+                ProtectedShardContentMode.ENCRYPTED -> ProtectedShardContent.EncryptedPayload(
+                    value = contentValue,
+                    algorithm = contentAlgorithm
+                )
+            }
+        }.getOrElse { error ->
+            issues += issue(
+                ShardValidationIssueCode.INVALID_PAYLOAD,
+                error.message.orEmpty().ifBlank { "Invalid protected shard content." }
+            )
+            null
+        }
+    }
+
     private fun validateDomainModel(
         shardId: String,
         subjectId: String,
         shardType: ShardType,
         version: Int,
-        payload: String,
+        protectedContent: ProtectedShardContent,
         source: String,
         observedAt: Instant,
         tags: Set<String>,
@@ -220,7 +255,11 @@ class FileIdentityShardIntegrityChecker(
                 subjectId = IdentitySubjectId(subjectId),
                 type = shardType,
                 version = version,
-                payload = payload,
+                payload = when (protectedContent) {
+                    is ProtectedShardContent.Plaintext -> protectedContent.value
+                    is ProtectedShardContent.EncryptedPayload -> ProtectedShardContent.PROTECTED_PAYLOAD_PLACEHOLDER
+                },
+                protectedContent = protectedContent,
                 source = source,
                 observedAt = observedAt,
                 tags = tags
@@ -288,9 +327,11 @@ class FileIdentityShardIntegrityChecker(
             "subjectId",
             "type",
             "version",
-            "payload",
             "source",
             "observedAt",
+            "contentMode",
+            "contentValue",
+            "contentAlgorithm",
             "tagCount"
         )
     }

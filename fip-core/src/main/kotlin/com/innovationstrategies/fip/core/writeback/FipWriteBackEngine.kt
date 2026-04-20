@@ -1,11 +1,14 @@
 package com.innovationstrategies.fip.core.writeback
 
 import com.innovationstrategies.fip.core.domain.IdentityShard
+import com.innovationstrategies.fip.core.domain.ContentProtection
+import com.innovationstrategies.fip.core.domain.PlaintextContentProtection
 import java.time.Clock
 
 class FipWriteBackEngine(
     private val clock: Clock = Clock.systemUTC(),
-    private val shardIdGenerator: ShardIdGenerator = UuidShardIdGenerator
+    private val shardIdGenerator: ShardIdGenerator = UuidShardIdGenerator,
+    private val contentProtection: ContentProtection = PlaintextContentProtection
 ) {
     fun plan(
         request: IdentityUpdateRequest,
@@ -13,12 +16,14 @@ class FipWriteBackEngine(
     ): ReShardPlan {
         val selectedShards = selectShardsForReplacement(request, existingShards)
         val replacementVersion = (selectedShards.maxOfOrNull { it.version } ?: 0) + 1
+        val protectedContent = contentProtection.protect(request.payload)
         val replacementShard = IdentityShard(
             id = shardIdGenerator.generateReplacementShardId(request),
             subjectId = request.subjectId,
             type = request.shardType,
             version = replacementVersion,
-            payload = request.payload,
+            payload = contentProtection.compatibilityPayload(protectedContent),
+            protectedContent = protectedContent,
             source = request.source,
             observedAt = clock.instant(),
             tags = request.tags

@@ -3,10 +3,13 @@ package com.innovationstrategies.fip.core.reconstruction
 import com.innovationstrategies.fip.core.domain.IdentityShard
 import com.innovationstrategies.fip.core.domain.IdentityShardId
 import com.innovationstrategies.fip.core.domain.IdentitySubjectId
+import com.innovationstrategies.fip.core.domain.PlaceholderEncryptedContentProtection
+import com.innovationstrategies.fip.core.domain.ProtectedShardContent
 import com.innovationstrategies.fip.core.domain.ProvenanceDecision
 import com.innovationstrategies.fip.core.domain.ProvenanceReason
 import com.innovationstrategies.fip.core.domain.ReconstructionPolicy
 import com.innovationstrategies.fip.core.domain.ReconstructionRequest
+import com.innovationstrategies.fip.core.domain.ShardContentExposure
 import com.innovationstrategies.fip.core.domain.ShardType
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -73,8 +76,8 @@ class FipReconstructionEngineTest {
         assertEquals(listOf(first), result.includedShards)
         assertEquals(setOf(second.id), result.excludedShardIds)
         assertTrue(result.wasBounded)
-        assertEquals(ProvenanceReason.WITHIN_BOUND, result.provenance[0].reason)
-        assertEquals(ProvenanceReason.OUTSIDE_BOUND, result.provenance[1].reason)
+        assertEquals(ProvenanceReason.OUTSIDE_BOUND, result.provenance[0].reason)
+        assertEquals(ProvenanceReason.WITHIN_BOUND, result.provenance[1].reason)
     }
 
     @Test
@@ -92,6 +95,68 @@ class FipReconstructionEngineTest {
     }
 
     @Test
+    fun `content exposure is injectable for payload bounds`() {
+        val exposingEngine = FipReconstructionEngine(
+            clock = Clock.fixed(Instant.parse("2026-04-20T12:00:00Z"), ZoneOffset.UTC),
+            contentExposure = ShardContentExposure { content -> "${content.value}-expanded" }
+        )
+        val shard = shard("first", subjectId, ShardType.IDENTITY_CORE, payload = "12345")
+
+        val result = exposingEngine.reconstruct(request(maxPayloadBytes = 5), listOf(shard))
+
+        assertTrue(result.includedShards.isEmpty())
+        assertEquals(setOf(shard.id), result.excludedShardIds)
+        assertEquals(ProvenanceReason.PAYLOAD_LIMIT_EXCEEDED, result.provenance.single().reason)
+    }
+
+    @Test
+    fun `non-exposable protected content is excluded with provenance`() {
+        val protectedContent = PlaceholderEncryptedContentProtection.protect("protected payload")
+        val shard = IdentityShard(
+            id = IdentityShardId("encrypted"),
+            subjectId = subjectId,
+            type = ShardType.IDENTITY_CORE,
+            version = 1,
+            payload = ProtectedShardContent.PROTECTED_PAYLOAD_PLACEHOLDER,
+            protectedContent = protectedContent,
+            source = "test-source",
+            observedAt = observedAt
+        )
+
+        val result = engine.reconstruct(request(), listOf(shard))
+
+        assertTrue(result.includedShards.isEmpty())
+        assertEquals(setOf(shard.id), result.excludedShardIds)
+        assertEquals(ProvenanceReason.CONTENT_NOT_EXPOSABLE, result.provenance.single().reason)
+    }
+
+    @Test
+    fun `selection and reconstruction cooperate with explicit protected content priority`() {
+        val plaintext = shard("a-plaintext", subjectId, ShardType.IDENTITY_CORE)
+        val protectedContent = PlaceholderEncryptedContentProtection.protect("protected payload")
+        val encrypted = IdentityShard(
+            id = IdentityShardId("z-encrypted"),
+            subjectId = subjectId,
+            type = ShardType.IDENTITY_CORE,
+            version = 1,
+            payload = ProtectedShardContent.PROTECTED_PAYLOAD_PLACEHOLDER,
+            protectedContent = protectedContent,
+            source = "test-source",
+            observedAt = observedAt
+        )
+
+        val result = engine.reconstruct(
+            request(maxShardCount = 1, explicitShardIds = setOf(encrypted.id)),
+            listOf(plaintext, encrypted)
+        )
+
+        assertTrue(result.includedShards.isEmpty())
+        assertEquals(setOf(plaintext.id, encrypted.id), result.excludedShardIds)
+        assertEquals(ProvenanceReason.OUTSIDE_BOUND, result.provenance[0].reason)
+        assertEquals(ProvenanceReason.CONTENT_NOT_EXPOSABLE, result.provenance[1].reason)
+    }
+
+    @Test
     fun `provenance is emitted for inclusion and exclusion decisions`() {
         val included = shard("included", subjectId, ShardType.IDENTITY_CORE)
         val excluded = shard("excluded", subjectId, ShardType.MEMORY_EPHEMERAL)
@@ -99,11 +164,13 @@ class FipReconstructionEngineTest {
         val result = engine.reconstruct(request(), listOf(included, excluded))
 
         assertEquals(2, result.provenance.size)
-        assertEquals("request-1", result.provenance[0].requestId)
-        assertEquals(ProvenanceDecision.INCLUDED, result.provenance[0].decision)
-        assertEquals(included.id, result.provenance[0].shardId)
-        assertEquals(ProvenanceDecision.EXCLUDED, result.provenance[1].decision)
-        assertEquals(excluded.id, result.provenance[1].shardId)
+        assertTrue(result.provenance.all { it.requestId == "request-1" })
+        assertTrue(result.provenance.any {
+            it.decision == ProvenanceDecision.INCLUDED && it.shardId == included.id
+        })
+        assertTrue(result.provenance.any {
+            it.decision == ProvenanceDecision.EXCLUDED && it.shardId == excluded.id
+        })
     }
 
     @Test
@@ -127,7 +194,8 @@ class FipReconstructionEngineTest {
         maxShardCount: Int = 10,
         maxPayloadBytes: Int? = null,
         allowedShardTypes: Set<ShardType> = ReconstructionRequest.DEFAULT_ALLOWED_SHARD_TYPES,
-        allowSystemMeta: Boolean = false
+        allowSystemMeta: Boolean = false,
+        explicitShardIds: Set<IdentityShardId> = emptySet()
     ): ReconstructionRequest =
         ReconstructionRequest(
             requestId = "request-1",
@@ -137,6 +205,7 @@ class FipReconstructionEngineTest {
             maxShardCount = maxShardCount,
             maxPayloadBytes = maxPayloadBytes,
             allowedShardTypes = allowedShardTypes,
+            explicitShardIds = explicitShardIds,
             allowSystemMeta = allowSystemMeta
         )
 

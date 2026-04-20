@@ -33,7 +33,36 @@ class MainTest {
         assertEquals(0, load.exitCode)
         assertTrue(save.out.contains("saved id=shard-1"))
         assertTrue(load.out.contains("shard id=shard-1 subjectId=subject-1 type=IDENTITY_CORE"))
+        assertTrue(load.out.contains("contentMode=PLAINTEXT"))
+        assertTrue(load.out.contains("contentAlgorithm=PLAINTEXT-DEVELOPMENT"))
         assertTrue(load.out.contains("payload=core payload"))
+    }
+
+    @Test
+    fun `save and load encrypted placeholder shard through cli`() {
+        val store = Files.createTempDirectory("fip-cli-test").toString()
+
+        val save = run(
+            "save-shard",
+            "--store", store,
+            "--id", "encrypted-1",
+            "--subject", "subject-1",
+            "--type", "IDENTITY_CORE",
+            "--version", "1",
+            "--payload", "protected operator payload",
+            "--source", "cli-test",
+            "--observed-at", "2026-04-20T00:00:00Z",
+            "--content-mode", "ENCRYPTED_PLACEHOLDER"
+        )
+        val load = run("load-shard", "--store", store, "--id", "encrypted-1")
+        val list = run("list-shards", "--store", store, "--subject", "subject-1")
+
+        assertEquals(0, save.exitCode)
+        assertEquals(0, load.exitCode)
+        assertTrue(load.out.contains("contentMode=ENCRYPTED"))
+        assertTrue(load.out.contains("contentAlgorithm=FIP-PLACEHOLDER-NO-CRYPTO"))
+        assertTrue(load.out.contains("payload=<protected-content>"))
+        assertTrue(list.out.contains("contentMode=ENCRYPTED"))
     }
 
     @Test
@@ -77,6 +106,33 @@ class MainTest {
         assertTrue(result.out.contains("included id=core type=IDENTITY_CORE version=1"))
         assertTrue(result.out.contains("provenance shardId=core type=IDENTITY_CORE decision=INCLUDED"))
         assertTrue(result.out.contains("provenance shardId=ephemeral type=MEMORY_EPHEMERAL decision=EXCLUDED"))
+    }
+
+    @Test
+    fun `reconstruct through cli excludes non-exposable protected content explicitly`() {
+        val store = Files.createTempDirectory("fip-cli-test").toString()
+        runSave(
+            store = store,
+            id = "encrypted",
+            subject = "subject-1",
+            type = "IDENTITY_CORE",
+            extraArgs = arrayOf("--content-mode", "ENCRYPTED_PLACEHOLDER")
+        )
+
+        val result = run(
+            "reconstruct",
+            "--store", store,
+            "--request-id", "request-1",
+            "--subject", "subject-1",
+            "--task-type", "cli-test",
+            "--surface", "terminal",
+            "--max-shards", "10"
+        )
+
+        assertEquals(0, result.exitCode)
+        assertTrue(result.out.contains("includedCount=0"))
+        assertTrue(result.out.contains("excludedCount=1"))
+        assertTrue(result.out.contains("provenance shardId=encrypted type=IDENTITY_CORE decision=EXCLUDED reason=CONTENT_NOT_EXPOSABLE"))
     }
 
     @Test
@@ -150,6 +206,23 @@ class MainTest {
     }
 
     @Test
+    fun `write-back can create encrypted placeholder replacement through cli`() {
+        val store = Files.createTempDirectory("fip-cli-test").toString()
+        runSave(store, "prior-core", "subject-1", "IDENTITY_CORE")
+
+        val writeBack = runWriteBack(
+            store = store,
+            extraArgs = arrayOf("--content-mode", "ENCRYPTED_PLACEHOLDER")
+        )
+        val list = run("list-shards", "--store", store, "--subject", "subject-1")
+
+        assertEquals(0, writeBack.exitCode)
+        assertTrue(writeBack.out.contains("createdCount=1"))
+        assertTrue(list.out.contains("contentMode=ENCRYPTED"))
+        assertTrue(list.out.contains("payload=<protected-content>"))
+    }
+
+    @Test
     fun `check-integrity reports valid shard store`() {
         val store = Files.createTempDirectory("fip-cli-test").toString()
         runSave(store, "shard-1", "subject-1")
@@ -174,9 +247,11 @@ class MainTest {
             subjectId=subject-1
             type=NOT_A_TYPE
             version=1
-            payload=payload
             source=cli-test
             observedAt=2026-04-20T00:00:00Z
+            contentMode=PLAINTEXT
+            contentValue=payload
+            contentAlgorithm=PLAINTEXT-DEVELOPMENT
             tagCount=0
             """.trimIndent()
         )
@@ -216,18 +291,22 @@ class MainTest {
         store: String,
         id: String,
         subject: String,
-        type: String = "IDENTITY_CORE"
+        type: String = "IDENTITY_CORE",
+        extraArgs: Array<String> = emptyArray()
     ): CliRun =
         run(
-            "save-shard",
-            "--store", store,
-            "--id", id,
-            "--subject", subject,
-            "--type", type,
-            "--version", "1",
-            "--payload", "payload for $id",
-            "--source", "cli-test",
-            "--observed-at", "2026-04-20T00:00:00Z"
+            *arrayOf(
+                "save-shard",
+                "--store", store,
+                "--id", id,
+                "--subject", subject,
+                "--type", type,
+                "--version", "1",
+                "--payload", "payload for $id",
+                "--source", "cli-test",
+                "--observed-at", "2026-04-20T00:00:00Z"
+            ),
+            *extraArgs
         )
 
     private fun runWriteBack(
@@ -258,9 +337,11 @@ class MainTest {
         subjectId=subject-1
         type=IDENTITY_CORE
         version=1
-        payload=payload
         source=cli-test
         observedAt=2026-04-20T00:00:00Z
+        contentMode=PLAINTEXT
+        contentValue=payload
+        contentAlgorithm=PLAINTEXT-DEVELOPMENT
         tagCount=0
         """.trimIndent()
 

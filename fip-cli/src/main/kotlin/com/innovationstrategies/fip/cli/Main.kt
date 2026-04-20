@@ -4,6 +4,10 @@ import com.innovationstrategies.fip.core.FipVersion
 import com.innovationstrategies.fip.core.domain.IdentityShard
 import com.innovationstrategies.fip.core.domain.IdentityShardId
 import com.innovationstrategies.fip.core.domain.IdentitySubjectId
+import com.innovationstrategies.fip.core.domain.ContentProtection
+import com.innovationstrategies.fip.core.domain.PlaceholderEncryptedContentProtection
+import com.innovationstrategies.fip.core.domain.PlaintextContentProtection
+import com.innovationstrategies.fip.core.domain.ProtectedShardContent
 import com.innovationstrategies.fip.core.domain.ReconstructionPolicy
 import com.innovationstrategies.fip.core.domain.ReconstructionRequest
 import com.innovationstrategies.fip.core.domain.ShardType
@@ -59,12 +63,15 @@ fun runCli(args: Array<String>, out: PrintStream, err: PrintStream): Int {
 private fun saveShard(args: List<String>, out: PrintStream): Int {
     val options = parseOptions(args)
     val repository = repositoryFor(options)
+    val contentProtection = contentProtectionFor(options)
+    val protectedContent = contentProtection.protect(options.required("payload"))
     val shard = IdentityShard(
         id = IdentityShardId(options.required("id")),
         subjectId = IdentitySubjectId(options.required("subject")),
         type = ShardType.valueOf(options.required("type")),
         version = options.required("version").toInt(),
-        payload = options.required("payload"),
+        payload = contentProtection.compatibilityPayload(protectedContent),
+        protectedContent = protectedContent,
         source = options.required("source"),
         observedAt = Instant.parse(options.required("observed-at")),
         tags = options.values("tag").toSet() + options.optional("tags").csvValues()
@@ -139,7 +146,10 @@ private fun reconstruct(args: List<String>, out: PrintStream): Int {
     out.println("excludedCount=${result.excludedShardIds.size}")
     out.println("wasBounded=${result.wasBounded}")
     result.includedShards.forEach { shard ->
-        out.println("included id=${shard.id.value} type=${shard.type.name} version=${shard.version}")
+        out.println(
+            "included id=${shard.id.value} type=${shard.type.name} version=${shard.version} " +
+                "contentMode=${shard.protectedContent.mode.name}"
+        )
     }
     result.provenance.forEach { record ->
         out.println(
@@ -154,6 +164,7 @@ private fun writeBack(args: List<String>, out: PrintStream): Int {
     val options = parseOptions(args)
     val repository = repositoryFor(options)
     val replaceShardIds = options.values("replace-id").map { IdentityShardId(it) }.toSet()
+    val contentProtection = contentProtectionFor(options)
     val request = IdentityUpdateRequest(
         requestId = options.required("request-id"),
         subjectId = IdentitySubjectId(options.required("subject")),
@@ -169,7 +180,7 @@ private fun writeBack(args: List<String>, out: PrintStream): Int {
         allowSystemMeta = options.flag("allow-system-meta")
     )
     val availableShards = availableShardsForWriteBack(repository, request)
-    val result = FipWriteBackEngine().writeBack(request, availableShards)
+    val result = FipWriteBackEngine(contentProtection = contentProtection).writeBack(request, availableShards)
 
     result.plan.replacementShards.forEach { repository.save(it) }
     result.deletedShardIds.forEach { repository.delete(it) }
@@ -208,6 +219,15 @@ private fun checkIntegrity(args: List<String>, out: PrintStream): Int {
 private fun repositoryFor(options: CliOptions): FileIdentityShardRepository =
     FileIdentityShardRepository(Path.of(options.required("store")))
 
+private fun contentProtectionFor(options: CliOptions): ContentProtection =
+    when (options.optional("content-mode") ?: "PLAINTEXT") {
+        "PLAINTEXT" -> PlaintextContentProtection
+        "ENCRYPTED_PLACEHOLDER" -> PlaceholderEncryptedContentProtection
+        else -> throw IllegalArgumentException(
+            "Unsupported --content-mode. Use PLAINTEXT or ENCRYPTED_PLACEHOLDER."
+        )
+    }
+
 private fun availableShardsForWriteBack(
     repository: FileIdentityShardRepository,
     request: IdentityUpdateRequest
@@ -224,10 +244,20 @@ private fun printShard(out: PrintStream, shard: IdentityShard) {
     out.println(
         "shard id=${shard.id.value} subjectId=${shard.subjectId.value} type=${shard.type.name} " +
             "version=${shard.version} source=${shard.source} observedAt=${shard.observedAt} " +
+            "contentMode=${shard.protectedContent.mode.name} contentAlgorithm=${contentAlgorithmFor(shard.protectedContent)} " +
             "tags=${shard.tags.sorted().joinToString(",")}"
     )
-    out.println("payload=${shard.payload}")
+    when (shard.protectedContent) {
+        is ProtectedShardContent.Plaintext -> out.println("payload=${shard.payload}")
+        is ProtectedShardContent.EncryptedPayload -> out.println("payload=${ProtectedShardContent.PROTECTED_PAYLOAD_PLACEHOLDER}")
+    }
 }
+
+private fun contentAlgorithmFor(content: ProtectedShardContent): String =
+    when (content) {
+        is ProtectedShardContent.Plaintext -> "PLAINTEXT-DEVELOPMENT"
+        is ProtectedShardContent.EncryptedPayload -> content.algorithm
+    }
 
 private fun parseOptions(args: List<String>): CliOptions {
     val values = linkedMapOf<String, MutableList<String>>()
@@ -276,11 +306,11 @@ private fun String.toShardTypeSet(): Set<ShardType> =
 private fun printUsage(out: PrintStream) {
     out.println("FIP CLI v${FipVersion.VALUE}")
     out.println("Commands:")
-    out.println("  save-shard --store <dir> --id <id> --subject <subject> --type <ShardType> --version <n> --payload <text> --source <source> --observed-at <instant> [--tag <tag>] [--tags a,b]")
+    out.println("  save-shard --store <dir> --id <id> --subject <subject> --type <ShardType> --version <n> --payload <text> --source <source> --observed-at <instant> [--content-mode PLAINTEXT|ENCRYPTED_PLACEHOLDER] [--tag <tag>] [--tags a,b]")
     out.println("  load-shard --store <dir> --id <id>")
     out.println("  list-shards --store <dir> --subject <subject>")
     out.println("  delete-shard --store <dir> --id <id>")
     out.println("  reconstruct --store <dir> --request-id <id> --subject <subject> --task-type <type> --surface <surface> --max-shards <n> [--max-payload-bytes <n>] [--allowed-types A,B] [--excluded-types A,B] [--allow-system-meta]")
-    out.println("  write-back --store <dir> --request-id <id> --subject <subject> --task-type <type> --surface <surface> --type <ShardType> --payload <text> --source <source> [--replace-id <id>] [--tag <tag>] [--tags a,b] [--max-replacement-source-shards <n>] [--max-payload-bytes <n>] [--allow-system-meta]")
+    out.println("  write-back --store <dir> --request-id <id> --subject <subject> --task-type <type> --surface <surface> --type <ShardType> --payload <text> --source <source> [--content-mode PLAINTEXT|ENCRYPTED_PLACEHOLDER] [--replace-id <id>] [--tag <tag>] [--tags a,b] [--max-replacement-source-shards <n>] [--max-payload-bytes <n>] [--allow-system-meta]")
     out.println("  check-integrity --store <dir>")
 }

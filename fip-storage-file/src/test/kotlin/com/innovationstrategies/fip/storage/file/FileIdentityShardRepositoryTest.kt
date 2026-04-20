@@ -3,6 +3,8 @@ package com.innovationstrategies.fip.storage.file
 import com.innovationstrategies.fip.core.domain.IdentityShard
 import com.innovationstrategies.fip.core.domain.IdentityShardId
 import com.innovationstrategies.fip.core.domain.IdentitySubjectId
+import com.innovationstrategies.fip.core.domain.PlaceholderEncryptedContentProtection
+import com.innovationstrategies.fip.core.domain.ProtectedShardContent
 import com.innovationstrategies.fip.core.domain.ShardType
 import java.nio.file.Files
 import java.time.Instant
@@ -80,8 +82,32 @@ class FileIdentityShardRepositoryTest {
         assertTrue(contents.contains("id=shard-1"))
         assertTrue(contents.contains("subjectId=subject-1"))
         assertTrue(contents.contains("type=IDENTITY_CORE"))
+        assertTrue(contents.contains("contentMode=PLAINTEXT"))
+        assertTrue(contents.contains("contentAlgorithm=PLAINTEXT-DEVELOPMENT"))
+        assertTrue(contents.contains("contentValue=payload for shard-1"))
+        assertFalse(contents.contains("payload=payload for shard-1"))
         assertTrue(contents.contains("tagCount=1"))
         assertTrue(contents.contains("tag.0=core"))
+    }
+
+    @Test
+    fun `save and load encrypted placeholder content by id`() {
+        val repository = repository()
+        val protectedContent = PlaceholderEncryptedContentProtection.protect("sensitive payload")
+        val shard = IdentityShard(
+            id = IdentityShardId("encrypted-shard"),
+            subjectId = subjectId,
+            type = ShardType.IDENTITY_CORE,
+            version = 1,
+            payload = ProtectedShardContent.PROTECTED_PAYLOAD_PLACEHOLDER,
+            protectedContent = protectedContent,
+            source = "test-source",
+            observedAt = observedAt
+        )
+
+        repository.save(shard)
+
+        assertEquals(shard, repository.load(shard.id))
     }
 
     private fun repository(): FileIdentityShardRepository =
