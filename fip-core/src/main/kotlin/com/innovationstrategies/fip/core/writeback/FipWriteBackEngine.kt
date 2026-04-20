@@ -1,15 +1,11 @@
 package com.innovationstrategies.fip.core.writeback
 
 import com.innovationstrategies.fip.core.domain.IdentityShard
-import com.innovationstrategies.fip.core.domain.IdentityShardId
 import java.time.Clock
-import java.util.UUID
 
 class FipWriteBackEngine(
     private val clock: Clock = Clock.systemUTC(),
-    private val shardIdFactory: (IdentityUpdateRequest) -> IdentityShardId = { request ->
-        IdentityShardId("${request.requestId}-${UUID.randomUUID()}")
-    }
+    private val shardIdGenerator: ShardIdGenerator = UuidShardIdGenerator
 ) {
     fun plan(
         request: IdentityUpdateRequest,
@@ -18,7 +14,7 @@ class FipWriteBackEngine(
         val selectedShards = selectShardsForReplacement(request, existingShards)
         val replacementVersion = (selectedShards.maxOfOrNull { it.version } ?: 0) + 1
         val replacementShard = IdentityShard(
-            id = shardIdFactory(request),
+            id = shardIdGenerator.generateReplacementShardId(request),
             subjectId = request.subjectId,
             type = request.shardType,
             version = replacementVersion,

@@ -10,6 +10,7 @@ import com.innovationstrategies.fip.core.domain.ShardType
 import com.innovationstrategies.fip.core.reconstruction.FipReconstructionEngine
 import com.innovationstrategies.fip.core.writeback.FipWriteBackEngine
 import com.innovationstrategies.fip.core.writeback.IdentityUpdateRequest
+import com.innovationstrategies.fip.storage.file.FileIdentityShardIntegrityChecker
 import com.innovationstrategies.fip.storage.file.FileIdentityShardRepository
 import java.io.PrintStream
 import java.nio.file.Path
@@ -34,6 +35,7 @@ fun runCli(args: Array<String>, out: PrintStream, err: PrintStream): Int {
             "delete-shard" -> deleteShard(args.drop(1), out)
             "reconstruct" -> reconstruct(args.drop(1), out)
             "write-back" -> writeBack(args.drop(1), out)
+            "check-integrity" -> checkIntegrity(args.drop(1), out)
             "version" -> {
                 out.println("FIP CLI v${FipVersion.VALUE}")
                 0
@@ -183,6 +185,26 @@ private fun writeBack(args: List<String>, out: PrintStream): Int {
     return 0
 }
 
+private fun checkIntegrity(args: List<String>, out: PrintStream): Int {
+    val options = parseOptions(args)
+    val result = FileIdentityShardIntegrityChecker(Path.of(options.required("store"))).check()
+
+    out.println("checkedCount=${result.checkedRecordCount}")
+    out.println("validCount=${result.validRecordCount}")
+    out.println("invalidCount=${result.invalidRecordCount}")
+    out.println("isValid=${result.isValid}")
+    result.records.forEach { record ->
+        record.issues.forEach { issue ->
+            out.println(
+                "issue location=${record.storageLocation} severity=${issue.severity.name} " +
+                    "code=${issue.code.name} message=${issue.message} " +
+                    "shardId=${record.shardId ?: ""} subjectId=${record.subjectId ?: ""}"
+            )
+        }
+    }
+    return 0
+}
+
 private fun repositoryFor(options: CliOptions): FileIdentityShardRepository =
     FileIdentityShardRepository(Path.of(options.required("store")))
 
@@ -260,4 +282,5 @@ private fun printUsage(out: PrintStream) {
     out.println("  delete-shard --store <dir> --id <id>")
     out.println("  reconstruct --store <dir> --request-id <id> --subject <subject> --task-type <type> --surface <surface> --max-shards <n> [--max-payload-bytes <n>] [--allowed-types A,B] [--excluded-types A,B] [--allow-system-meta]")
     out.println("  write-back --store <dir> --request-id <id> --subject <subject> --task-type <type> --surface <surface> --type <ShardType> --payload <text> --source <source> [--replace-id <id>] [--tag <tag>] [--tags a,b] [--max-replacement-source-shards <n>] [--max-payload-bytes <n>] [--allow-system-meta]")
+    out.println("  check-integrity --store <dir>")
 }

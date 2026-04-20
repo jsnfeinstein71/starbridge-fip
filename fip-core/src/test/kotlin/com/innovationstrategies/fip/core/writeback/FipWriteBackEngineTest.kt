@@ -19,7 +19,7 @@ class FipWriteBackEngineTest {
     private val decidedAt = Instant.parse("2026-04-20T12:00:00Z")
     private val engine = FipWriteBackEngine(
         clock = Clock.fixed(decidedAt, ZoneOffset.UTC),
-        shardIdFactory = { IdentityShardId("${it.requestId}-replacement") }
+        shardIdGenerator = ShardIdGenerator { IdentityShardId("generated-replacement-shard") }
     )
 
     @Test
@@ -32,13 +32,31 @@ class FipWriteBackEngineTest {
         )
 
         val replacement = result.plan.replacementShards.single()
-        assertEquals(IdentityShardId("request-1-replacement"), replacement.id)
+        assertEquals(IdentityShardId("generated-replacement-shard"), replacement.id)
         assertEquals(subjectId, replacement.subjectId)
         assertEquals(ShardType.IDENTITY_CORE, replacement.type)
         assertEquals(3, replacement.version)
         assertEquals("updated core payload", replacement.payload)
         assertEquals(setOf("write-back"), replacement.tags)
         assertTrue(replacement.id != prior.id)
+    }
+
+    @Test
+    fun `shard id generation is injectable and testable`() {
+        val prior = shard("prior-core", subjectId, ShardType.IDENTITY_CORE)
+        val generatedShardId = IdentityShardId("deterministic-test-shard")
+        val deterministicEngine = FipWriteBackEngine(
+            clock = Clock.fixed(decidedAt, ZoneOffset.UTC),
+            shardIdGenerator = ShardIdGenerator { generatedShardId }
+        )
+
+        val result = deterministicEngine.writeBack(
+            request = request(),
+            existingShards = listOf(prior)
+        )
+
+        assertEquals(generatedShardId, result.plan.replacementShards.single().id)
+        assertEquals(setOf(generatedShardId), result.createdShardIds)
     }
 
     @Test
@@ -80,7 +98,7 @@ class FipWriteBackEngineTest {
 
         assertEquals("request-1", result.requestId)
         assertEquals(subjectId, result.subjectId)
-        assertEquals(setOf(IdentityShardId("request-1-replacement")), result.createdShardIds)
+        assertEquals(setOf(IdentityShardId("generated-replacement-shard")), result.createdShardIds)
         assertEquals(setOf(prior.id), result.replacedShardIds)
         assertEquals(setOf(prior.id), result.deletedShardIds)
         assertEquals(decidedAt, result.decidedAt)

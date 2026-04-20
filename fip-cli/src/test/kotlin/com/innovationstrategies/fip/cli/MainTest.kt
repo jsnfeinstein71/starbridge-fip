@@ -4,6 +4,8 @@ import java.io.ByteArrayOutputStream
 import java.io.PrintStream
 import java.nio.charset.StandardCharsets
 import java.nio.file.Files
+import java.nio.file.Path
+import kotlin.io.path.writeText
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
@@ -119,7 +121,7 @@ class MainTest {
         assertTrue(writeBack.out.contains("replacedCount=1"))
         assertTrue(writeBack.out.contains("deletedCount=1"))
         assertTrue(writeBack.out.contains("wasBounded=false"))
-        assertTrue(writeBack.out.contains("created id=request-1-"))
+        assertTrue(writeBack.out.contains("created id=shard-"))
         assertTrue(writeBack.out.contains("deleted id=prior-core"))
     }
 
@@ -145,6 +147,69 @@ class MainTest {
         assertTrue(loadKept.out.contains("shard id=keep-me"))
         assertTrue(list.out.contains("count=2"))
         assertTrue(list.out.contains("payload=updated payload"))
+    }
+
+    @Test
+    fun `check-integrity reports valid shard store`() {
+        val store = Files.createTempDirectory("fip-cli-test").toString()
+        runSave(store, "shard-1", "subject-1")
+
+        val result = run("check-integrity", "--store", store)
+
+        assertEquals(0, result.exitCode)
+        assertTrue(result.out.contains("checkedCount=1"))
+        assertTrue(result.out.contains("validCount=1"))
+        assertTrue(result.out.contains("invalidCount=0"))
+        assertTrue(result.out.contains("isValid=true"))
+    }
+
+    @Test
+    fun `check-integrity reports invalid shard record with issue lines`() {
+        val store = Files.createTempDirectory("fip-cli-test")
+        writeShardFile(
+            store.resolve("invalid.shard.properties"),
+            """
+            formatVersion=1
+            id=bad-shard
+            subjectId=subject-1
+            type=NOT_A_TYPE
+            version=1
+            payload=payload
+            source=cli-test
+            observedAt=2026-04-20T00:00:00Z
+            tagCount=0
+            """.trimIndent()
+        )
+
+        val result = run("check-integrity", "--store", store.toString())
+
+        assertEquals(0, result.exitCode)
+        assertTrue(result.out.contains("checkedCount=1"))
+        assertTrue(result.out.contains("validCount=0"))
+        assertTrue(result.out.contains("invalidCount=1"))
+        assertTrue(result.out.contains("isValid=false"))
+        assertTrue(result.out.contains("issue location="))
+        assertTrue(result.out.contains("severity=ERROR"))
+        assertTrue(result.out.contains("code=INVALID_SHARD_TYPE"))
+        assertTrue(result.out.contains("message=Invalid shard type: NOT_A_TYPE."))
+        assertTrue(result.out.contains("shardId=bad-shard"))
+        assertTrue(result.out.contains("subjectId=subject-1"))
+    }
+
+    @Test
+    fun `check-integrity reports duplicate shard ids`() {
+        val store = Files.createTempDirectory("fip-cli-test")
+        writeShardFile(store.resolve("first.shard.properties"), validShardRecord("duplicate-id"))
+        writeShardFile(store.resolve("second.shard.properties"), validShardRecord("duplicate-id"))
+
+        val result = run("check-integrity", "--store", store.toString())
+
+        assertEquals(0, result.exitCode)
+        assertTrue(result.out.contains("checkedCount=2"))
+        assertTrue(result.out.contains("invalidCount=2"))
+        assertTrue(result.out.contains("isValid=false"))
+        assertTrue(result.out.contains("code=DUPLICATE_SHARD_ID"))
+        assertTrue(result.out.contains("shardId=duplicate-id"))
     }
 
     private fun runSave(
@@ -185,6 +250,23 @@ class MainTest {
             ),
             *extraArgs
         )
+
+    private fun validShardRecord(id: String): String =
+        """
+        formatVersion=1
+        id=$id
+        subjectId=subject-1
+        type=IDENTITY_CORE
+        version=1
+        payload=payload
+        source=cli-test
+        observedAt=2026-04-20T00:00:00Z
+        tagCount=0
+        """.trimIndent()
+
+    private fun writeShardFile(path: Path, contents: String) {
+        path.writeText(contents)
+    }
 
     private fun run(vararg args: String): CliRun {
         val outBytes = ByteArrayOutputStream()
