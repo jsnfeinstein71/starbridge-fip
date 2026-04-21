@@ -101,11 +101,147 @@ class MainTest {
 
         assertEquals(0, result.exitCode)
         assertTrue(result.out.contains("requestId=request-1"))
+        assertTrue(result.out.contains("selectedCount=1"))
         assertTrue(result.out.contains("includedCount=1"))
+        assertTrue(result.out.contains("skippedAtSelectionCount=1"))
+        assertTrue(result.out.contains("excludedAtReconstructionCount=0"))
         assertTrue(result.out.contains("excludedCount=1"))
+        assertTrue(result.out.contains("selected id=core type=IDENTITY_CORE version=1"))
         assertTrue(result.out.contains("included id=core type=IDENTITY_CORE version=1"))
+        assertTrue(result.out.contains("selection-skip id=ephemeral type=MEMORY_EPHEMERAL reason=EXPLICITLY_EXCLUDED"))
         assertTrue(result.out.contains("provenance shardId=core type=IDENTITY_CORE decision=INCLUDED"))
         assertTrue(result.out.contains("provenance shardId=ephemeral type=MEMORY_EPHEMERAL decision=EXCLUDED"))
+    }
+
+    @Test
+    fun `save and load graph map through cli`() {
+        val store = Files.createTempDirectory("fip-cli-test").toString()
+
+        val save = run(
+            "save-graph-map",
+            "--store", store,
+            "--subject", "subject-1",
+            "--node", "seed:IDENTITY_CORE:100",
+            "--node", "linked:IDENTITY_PREFS:80",
+            "--node-link", "seed:linked",
+            "--link", "seed:linked:75"
+        )
+        val load = run("load-graph-map", "--store", store, "--subject", "subject-1")
+
+        assertEquals(0, save.exitCode)
+        assertEquals(0, load.exitCode)
+        assertTrue(save.out.contains("savedGraphMap subjectId=subject-1"))
+        assertTrue(save.out.contains("nodeCount=2"))
+        assertTrue(save.out.contains("linkCount=1"))
+        assertTrue(load.out.contains("graphMap subjectId=subject-1"))
+        assertTrue(load.out.contains("node shardId=seed subjectId=subject-1 type=IDENTITY_CORE priority=100 linkedShardIds=linked"))
+        assertTrue(load.out.contains("link fromShardId=seed toShardId=linked weight=75"))
+    }
+
+    @Test
+    fun `graph-aware reconstruct through cli uses stored graph map`() {
+        val store = Files.createTempDirectory("fip-cli-test").toString()
+        runSave(store, "seed", "subject-1", "IDENTITY_CORE")
+        runSave(store, "linked", "subject-1", "IDENTITY_PREFS")
+        runSave(store, "unrelated", "subject-1", "BEHAVIOR_RULES")
+        run(
+            "save-graph-map",
+            "--store", store,
+            "--subject", "subject-1",
+            "--node", "seed:IDENTITY_CORE:100",
+            "--node", "linked:IDENTITY_PREFS:80",
+            "--node", "unrelated:BEHAVIOR_RULES:90",
+            "--node-link", "seed:linked"
+        )
+
+        val result = run(
+            "reconstruct",
+            "--store", store,
+            "--request-id", "request-1",
+            "--subject", "subject-1",
+            "--task-type", "cli-test",
+            "--surface", "terminal",
+            "--max-shards", "10",
+            "--shard-id", "seed",
+            "--use-graph-map"
+        )
+
+        assertEquals(0, result.exitCode)
+        assertTrue(result.out.contains("selectedCount=2"))
+        assertTrue(result.out.contains("includedCount=2"))
+        assertTrue(result.out.contains("excludedCount=1"))
+        assertTrue(result.out.contains("selected id=seed type=IDENTITY_CORE version=1 influences=EXPLICIT_SEED,WEIGHTED_PRIORITY"))
+        assertTrue(result.out.contains("selected id=linked type=IDENTITY_PREFS version=1 influences=GRAPH_LINKED,WEIGHTED_PRIORITY"))
+        assertTrue(result.out.contains("included id=seed type=IDENTITY_CORE version=1"))
+        assertTrue(result.out.contains("included id=linked type=IDENTITY_PREFS version=1"))
+        assertTrue(result.out.contains("selection-skip id=unrelated type=BEHAVIOR_RULES reason=NOT_IN_GRAPH_SELECTION"))
+        assertTrue(result.out.contains("provenance shardId=unrelated type=BEHAVIOR_RULES decision=EXCLUDED reason=NOT_IN_GRAPH_SELECTION"))
+    }
+
+    @Test
+    fun `graph-aware reconstruct through cli falls back when graph map is missing`() {
+        val store = Files.createTempDirectory("fip-cli-test").toString()
+        runSave(store, "core", "subject-1", "IDENTITY_CORE")
+
+        val result = run(
+            "reconstruct",
+            "--store", store,
+            "--request-id", "request-1",
+            "--subject", "subject-1",
+            "--task-type", "cli-test",
+            "--surface", "terminal",
+            "--max-shards", "10",
+            "--use-graph-map"
+        )
+
+        assertEquals(0, result.exitCode)
+        assertTrue(result.out.contains("selectedCount=1"))
+        assertTrue(result.out.contains("includedCount=1"))
+        assertTrue(result.out.contains("included id=core type=IDENTITY_CORE version=1"))
+    }
+
+    @Test
+    fun `rebuild graph map creates persisted graph from subject shards`() {
+        val store = Files.createTempDirectory("fip-cli-test").toString()
+        runSave(store, "core", "subject-1", "IDENTITY_CORE")
+        runSave(store, "prefs", "subject-1", "IDENTITY_PREFS")
+
+        val rebuild = run("rebuild-graph-map", "--store", store, "--subject", "subject-1")
+        val load = run("load-graph-map", "--store", store, "--subject", "subject-1")
+
+        assertEquals(0, rebuild.exitCode)
+        assertTrue(rebuild.out.contains("rebuiltGraphMap subjectId=subject-1"))
+        assertTrue(rebuild.out.contains("shardCount=2"))
+        assertTrue(rebuild.out.contains("nodeCount=2"))
+        assertTrue(rebuild.out.contains("refreshedExisting=false"))
+        assertTrue(load.out.contains("node shardId=core subjectId=subject-1 type=IDENTITY_CORE"))
+        assertTrue(load.out.contains("node shardId=prefs subjectId=subject-1 type=IDENTITY_PREFS"))
+        assertTrue(load.out.contains("link fromShardId=core toShardId=prefs"))
+    }
+
+    @Test
+    fun `rebuilt graph map supports graph-aware reconstruction through cli`() {
+        val store = Files.createTempDirectory("fip-cli-test").toString()
+        runSave(store, "core", "subject-1", "IDENTITY_CORE")
+        runSave(store, "prefs", "subject-1", "IDENTITY_PREFS")
+        run("rebuild-graph-map", "--store", store, "--subject", "subject-1")
+
+        val result = run(
+            "reconstruct",
+            "--store", store,
+            "--request-id", "request-1",
+            "--subject", "subject-1",
+            "--task-type", "cli-test",
+            "--surface", "terminal",
+            "--max-shards", "10",
+            "--shard-id", "core",
+            "--use-graph-map"
+        )
+
+        assertEquals(0, result.exitCode)
+        assertTrue(result.out.contains("includedCount=2"))
+        assertTrue(result.out.contains("included id=core type=IDENTITY_CORE version=1"))
+        assertTrue(result.out.contains("included id=prefs type=IDENTITY_PREFS version=1"))
     }
 
     @Test
@@ -130,8 +266,12 @@ class MainTest {
         )
 
         assertEquals(0, result.exitCode)
+        assertTrue(result.out.contains("selectedCount=1"))
         assertTrue(result.out.contains("includedCount=0"))
+        assertTrue(result.out.contains("excludedAtReconstructionCount=1"))
+        assertTrue(result.out.contains("nonExposableCount=1"))
         assertTrue(result.out.contains("excludedCount=1"))
+        assertTrue(result.out.contains("reconstruction-exclusion id=encrypted type=IDENTITY_CORE reason=CONTENT_NOT_EXPOSABLE nonExposable=true"))
         assertTrue(result.out.contains("provenance shardId=encrypted type=IDENTITY_CORE decision=EXCLUDED reason=CONTENT_NOT_EXPOSABLE"))
     }
 
@@ -220,6 +360,99 @@ class MainTest {
         assertTrue(writeBack.out.contains("createdCount=1"))
         assertTrue(list.out.contains("contentMode=ENCRYPTED"))
         assertTrue(list.out.contains("payload=<protected-content>"))
+    }
+
+    @Test
+    fun `write-back updates stored graph map when one exists`() {
+        val store = Files.createTempDirectory("fip-cli-test").toString()
+        runSave(store, "prior-core", "subject-1", "IDENTITY_CORE")
+        runSave(store, "linked-prefs", "subject-1", "IDENTITY_PREFS")
+        run(
+            "save-graph-map",
+            "--store", store,
+            "--subject", "subject-1",
+            "--node", "prior-core:IDENTITY_CORE:100",
+            "--node", "linked-prefs:IDENTITY_PREFS:80",
+            "--node-link", "prior-core:linked-prefs",
+            "--link", "prior-core:linked-prefs:75"
+        )
+
+        val writeBack = runWriteBack(store, extraArgs = arrayOf("--replace-id", "prior-core"))
+        val createdId = writeBack.createdShardId()
+        val graphMap = run("load-graph-map", "--store", store, "--subject", "subject-1")
+
+        assertEquals(0, writeBack.exitCode)
+        assertTrue(writeBack.out.contains("graphMapUpdated=true"))
+        assertTrue(graphMap.out.contains("node shardId=$createdId subjectId=subject-1 type=IDENTITY_CORE"))
+        assertTrue(graphMap.out.contains("linkedShardIds=linked-prefs"))
+        assertTrue(graphMap.out.contains("link fromShardId=$createdId toShardId=linked-prefs weight=75"))
+        assertTrue(!graphMap.out.contains("node shardId=prior-core "))
+    }
+
+    @Test
+    fun `write-back falls back when no graph map exists`() {
+        val store = Files.createTempDirectory("fip-cli-test").toString()
+        runSave(store, "prior-core", "subject-1", "IDENTITY_CORE")
+
+        val writeBack = runWriteBack(store)
+
+        assertEquals(0, writeBack.exitCode)
+        assertTrue(writeBack.out.contains("createdCount=1"))
+        assertTrue(writeBack.out.contains("graphMapUpdated=false"))
+    }
+
+    @Test
+    fun `graph-aware reconstruction works after write-back updates graph map`() {
+        val store = Files.createTempDirectory("fip-cli-test").toString()
+        runSave(store, "prior-core", "subject-1", "IDENTITY_CORE")
+        runSave(store, "linked-prefs", "subject-1", "IDENTITY_PREFS")
+        run(
+            "save-graph-map",
+            "--store", store,
+            "--subject", "subject-1",
+            "--node", "prior-core:IDENTITY_CORE:100",
+            "--node", "linked-prefs:IDENTITY_PREFS:80",
+            "--node-link", "prior-core:linked-prefs"
+        )
+
+        val writeBack = runWriteBack(store, extraArgs = arrayOf("--replace-id", "prior-core"))
+        val createdId = writeBack.createdShardId()
+        val reconstruction = run(
+            "reconstruct",
+            "--store", store,
+            "--request-id", "request-graph-after-write-back",
+            "--subject", "subject-1",
+            "--task-type", "cli-test",
+            "--surface", "terminal",
+            "--max-shards", "10",
+            "--shard-id", createdId,
+            "--use-graph-map"
+        )
+
+        assertEquals(0, reconstruction.exitCode)
+        assertTrue(reconstruction.out.contains("includedCount=2"))
+        assertTrue(reconstruction.out.contains("included id=$createdId type=IDENTITY_CORE version=2"))
+        assertTrue(reconstruction.out.contains("included id=linked-prefs type=IDENTITY_PREFS version=1"))
+    }
+
+    @Test
+    fun `rebuild graph map refreshes graph after write-back changes`() {
+        val store = Files.createTempDirectory("fip-cli-test").toString()
+        runSave(store, "prior-core", "subject-1", "IDENTITY_CORE")
+        runSave(store, "prefs", "subject-1", "IDENTITY_PREFS")
+        run("rebuild-graph-map", "--store", store, "--subject", "subject-1")
+
+        val writeBack = runWriteBack(store, extraArgs = arrayOf("--replace-id", "prior-core"))
+        val createdId = writeBack.createdShardId()
+        val rebuild = run("rebuild-graph-map", "--store", store, "--subject", "subject-1")
+        val load = run("load-graph-map", "--store", store, "--subject", "subject-1")
+
+        assertEquals(0, rebuild.exitCode)
+        assertTrue(rebuild.out.contains("refreshedExisting=true"))
+        assertTrue(load.out.contains("node shardId=$createdId subjectId=subject-1 type=IDENTITY_CORE"))
+        assertTrue(load.out.contains("node shardId=prefs subjectId=subject-1 type=IDENTITY_PREFS"))
+        assertTrue(load.out.contains("link fromShardId=$createdId toShardId=prefs"))
+        assertTrue(!load.out.contains("node shardId=prior-core "))
     }
 
     @Test
@@ -369,4 +602,11 @@ class MainTest {
         val out: String,
         val err: String
     )
+
+    private fun CliRun.createdShardId(): String =
+        Regex("""created id=([^\r\n]+)""")
+            .find(out)
+            ?.groupValues
+            ?.get(1)
+            ?: error("No created shard id in output: $out")
 }

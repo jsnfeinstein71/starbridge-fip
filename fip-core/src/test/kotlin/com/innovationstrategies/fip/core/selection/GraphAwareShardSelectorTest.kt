@@ -36,9 +36,15 @@ class GraphAwareShardSelectorTest {
         )
 
         assertEquals(listOf(seed, linked), plan.selectedShards)
+        assertEquals(unrelated.id, plan.skippedShards.single().shard.id)
+        assertEquals(ShardSelectionSkipReason.NOT_IN_GRAPH_SELECTION, plan.skippedShards.single().reason)
         assertEquals(
-            listOf(SkippedShard(unrelated, ShardSelectionSkipReason.NOT_IN_GRAPH_SELECTION)),
-            plan.skippedShards
+            setOf(SelectionInfluence.EXPLICIT_SEED, SelectionInfluence.WEIGHTED_PRIORITY),
+            plan.selectedShardDetails.first { it.shard.id == seed.id }.influences
+        )
+        assertEquals(
+            setOf(SelectionInfluence.GRAPH_LINKED, SelectionInfluence.WEIGHTED_PRIORITY),
+            plan.selectedShardDetails.first { it.shard.id == linked.id }.influences
         )
     }
 
@@ -64,10 +70,60 @@ class GraphAwareShardSelectorTest {
 
         assertEquals(listOf(seed, linkedHigh), plan.selectedShards)
         assertTrue(plan.wasBounded)
-        assertEquals(
-            listOf(SkippedShard(linkedLow, ShardSelectionSkipReason.OUTSIDE_BOUND)),
-            plan.skippedShards
+        assertEquals(linkedLow.id, plan.skippedShards.single().shard.id)
+        assertEquals(ShardSelectionSkipReason.OUTSIDE_BOUND, plan.skippedShards.single().reason)
+    }
+
+    @Test
+    fun `higher priority nodes are selected before lower priority nodes`() {
+        val highPriority = shard("high-priority", ShardType.IDENTITY_PREFS)
+        val lowPriority = shard("low-priority", ShardType.IDENTITY_CORE)
+        val selector = GraphAwareShardSelector(
+            ShardGraphMap.of(
+                nodes = listOf(
+                    node(highPriority, priority = 300),
+                    node(lowPriority, priority = 10)
+                )
+            )
         )
+
+        val plan = selector.select(
+            policy = policy(maxShardCount = 1),
+            shards = listOf(lowPriority, highPriority)
+        )
+
+        assertEquals(listOf(highPriority), plan.selectedShards)
+        assertEquals(lowPriority.id, plan.skippedShards.single().shard.id)
+        assertEquals(ShardSelectionSkipReason.OUTSIDE_BOUND, plan.skippedShards.single().reason)
+    }
+
+    @Test
+    fun `stronger weighted links are preferred over weaker links`() {
+        val seed = shard("seed", ShardType.IDENTITY_CORE)
+        val strongLinkLowPriority = shard("strong-link-low-priority", ShardType.IDENTITY_PREFS)
+        val weakLinkHighPriority = shard("weak-link-high-priority", ShardType.BEHAVIOR_RULES)
+        val selector = GraphAwareShardSelector(
+            ShardGraphMap.of(
+                nodes = listOf(
+                    node(seed, linkedShardIds = setOf(strongLinkLowPriority.id, weakLinkHighPriority.id)),
+                    node(strongLinkLowPriority, priority = 10),
+                    node(weakLinkHighPriority, priority = 500)
+                ),
+                links = listOf(
+                    ShardGraphLink(fromShardId = seed.id, toShardId = strongLinkLowPriority.id, weight = 900),
+                    ShardGraphLink(fromShardId = seed.id, toShardId = weakLinkHighPriority.id, weight = 25)
+                )
+            )
+        )
+
+        val plan = selector.select(
+            policy = policy(maxShardCount = 2, explicitShardIds = setOf(seed.id)),
+            shards = listOf(weakLinkHighPriority, strongLinkLowPriority, seed)
+        )
+
+        assertEquals(listOf(seed, strongLinkLowPriority), plan.selectedShards)
+        assertEquals(weakLinkHighPriority.id, plan.skippedShards.single().shard.id)
+        assertEquals(ShardSelectionSkipReason.OUTSIDE_BOUND, plan.skippedShards.single().reason)
     }
 
     @Test
@@ -93,10 +149,8 @@ class GraphAwareShardSelectorTest {
         )
 
         assertEquals(listOf(seed), plan.selectedShards)
-        assertEquals(
-            listOf(SkippedShard(excluded, ShardSelectionSkipReason.EXPLICITLY_EXCLUDED)),
-            plan.skippedShards
-        )
+        assertEquals(excluded.id, plan.skippedShards.single().shard.id)
+        assertEquals(ShardSelectionSkipReason.EXPLICITLY_EXCLUDED, plan.skippedShards.single().reason)
     }
 
     @Test
@@ -120,10 +174,8 @@ class GraphAwareShardSelectorTest {
         )
 
         assertEquals(listOf(seed), plan.selectedShards)
-        assertEquals(
-            listOf(SkippedShard(systemMeta, ShardSelectionSkipReason.SYSTEM_META_DENIED)),
-            plan.skippedShards
-        )
+        assertEquals(systemMeta.id, plan.skippedShards.single().shard.id)
+        assertEquals(ShardSelectionSkipReason.SYSTEM_META_DENIED, plan.skippedShards.single().reason)
     }
 
     @Test

@@ -6,9 +6,12 @@ import com.innovationstrategies.fip.core.domain.PlaintextContentProtection
 import com.innovationstrategies.fip.core.domain.ProvenanceDecision
 import com.innovationstrategies.fip.core.domain.ProvenanceReason
 import com.innovationstrategies.fip.core.domain.ProvenanceRecord
+import com.innovationstrategies.fip.core.domain.ReconstructionStageExclusion
 import com.innovationstrategies.fip.core.domain.ReconstructionPolicy
 import com.innovationstrategies.fip.core.domain.ReconstructionRequest
 import com.innovationstrategies.fip.core.domain.ReconstructionResult
+import com.innovationstrategies.fip.core.domain.SelectedShardReport
+import com.innovationstrategies.fip.core.domain.SelectionStageSkip
 import com.innovationstrategies.fip.core.domain.ShardContentExposure
 import com.innovationstrategies.fip.core.selection.DefaultShardSelector
 import com.innovationstrategies.fip.core.selection.ShardSelectionPolicy
@@ -30,6 +33,9 @@ class FipReconstructionEngine(
         val includedShards = mutableListOf<IdentityShard>()
         val excludedShardIds = mutableSetOf<IdentityShardId>()
         val provenance = mutableListOf<ProvenanceRecord>()
+        val selectedShardReports = mutableListOf<SelectedShardReport>()
+        val skippedAtSelection = mutableListOf<SelectionStageSkip>()
+        val excludedAtReconstruction = mutableListOf<ReconstructionStageExclusion>()
         var payloadBytes = 0
         val selectionPlan = shardSelector.select(
             policy = ShardSelectionPolicy(
@@ -46,6 +52,11 @@ class FipReconstructionEngine(
 
         selectionPlan.skippedShards.forEach { skipped ->
             excludedShardIds += skipped.shard.id
+            skippedAtSelection += SelectionStageSkip(
+                shard = skipped.shard,
+                reason = skipped.reason,
+                influences = skipped.influences
+            )
             provenance += provenanceFor(
                 request,
                 skipped.shard,
@@ -54,10 +65,23 @@ class FipReconstructionEngine(
             )
         }
 
-        for (shard in selectionPlan.selectedShards) {
+        selectionPlan.selectedShardDetails.forEach { selected ->
+            selectedShardReports += SelectedShardReport(
+                shard = selected.shard,
+                influences = selected.influences
+            )
+        }
+
+        for (selected in selectionPlan.selectedShardDetails) {
+            val shard = selected.shard
             val exposedContentResult = runCatching { contentExposure.expose(shard.protectedContent) }
             if (exposedContentResult.isFailure) {
                 excludedShardIds += shard.id
+                excludedAtReconstruction += ReconstructionStageExclusion(
+                    shard = shard,
+                    reason = ProvenanceReason.CONTENT_NOT_EXPOSABLE,
+                    influences = selected.influences
+                )
                 provenance += provenanceFor(
                     request,
                     shard,
@@ -72,6 +96,11 @@ class FipReconstructionEngine(
             if (maxPayloadBytes != null && payloadBytes + shardPayloadBytes > maxPayloadBytes) {
                 wasBounded = true
                 excludedShardIds += shard.id
+                excludedAtReconstruction += ReconstructionStageExclusion(
+                    shard = shard,
+                    reason = ProvenanceReason.PAYLOAD_LIMIT_EXCEEDED,
+                    influences = selected.influences
+                )
                 provenance += provenanceFor(
                     request,
                     shard,
@@ -98,11 +127,15 @@ class FipReconstructionEngine(
         return ReconstructionResult(
             requestId = request.requestId,
             subjectId = request.subjectId,
+            selectedShards = selectionPlan.selectedShards,
             includedShards = includedShards,
             excludedShardIds = excludedShardIds,
             provenance = provenance,
             maxShardCount = request.maxShardCount,
-            wasBounded = wasBounded
+            wasBounded = wasBounded,
+            skippedAtSelection = skippedAtSelection,
+            excludedAtReconstruction = excludedAtReconstruction,
+            selectedShardReports = selectedShardReports
         )
     }
 
@@ -128,6 +161,6 @@ class FipReconstructionEngine(
             ShardSelectionSkipReason.EXPLICITLY_EXCLUDED -> ProvenanceReason.EXPLICITLY_EXCLUDED
             ShardSelectionSkipReason.TYPE_NOT_ALLOWED -> ProvenanceReason.TYPE_NOT_ALLOWED
             ShardSelectionSkipReason.OUTSIDE_BOUND -> ProvenanceReason.OUTSIDE_BOUND
-            ShardSelectionSkipReason.NOT_IN_GRAPH_SELECTION -> ProvenanceReason.TYPE_NOT_ALLOWED
+            ShardSelectionSkipReason.NOT_IN_GRAPH_SELECTION -> ProvenanceReason.NOT_IN_GRAPH_SELECTION
         }
 }

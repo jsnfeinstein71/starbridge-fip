@@ -31,7 +31,17 @@ class DefaultShardSelector : ShardSelector {
         return ShardSelectionPlan(
             selectedShards = selectedShards,
             skippedShards = skippedShards,
-            wasBounded = boundedShards.isNotEmpty()
+            wasBounded = boundedShards.isNotEmpty(),
+            selectedShardDetails = selectedShards.map { shard ->
+                SelectedShardDetail(
+                    shard = shard,
+                    influences = if (shard.id in policy.explicitShardIds) {
+                        setOf(SelectionInfluence.EXPLICIT_SEED)
+                    } else {
+                        emptySet()
+                    }
+                )
+            }
         )
     }
 

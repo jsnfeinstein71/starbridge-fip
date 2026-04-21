@@ -21,7 +21,7 @@ class GraphAwareShardSelector(
         for (shard in shardsById.values) {
             val skipReason = skipReasonFor(policy, shard, candidateIds)
             if (skipReason != null) {
-                skippedShards += SkippedShard(shard, skipReason)
+                skippedShards += SkippedShard(shard, skipReason, influencesFor(policy, shard.id))
             } else {
                 eligibleShards += shard
             }
@@ -29,17 +29,23 @@ class GraphAwareShardSelector(
 
         val orderedShards = eligibleShards.sortedWith(
             compareBy<IdentityShard> { graphRank(policy, it) }
+                .thenByDescending { strongestSeedLinkWeight(policy, it.id) }
                 .thenByDescending { graphMap.nodeFor(it.id)?.priority ?: 0 }
                 .thenBy { it.id.value }
         )
         val selectedShards = orderedShards.take(policy.maxShardCount)
         val boundedShards = orderedShards.drop(policy.maxShardCount)
-        skippedShards += boundedShards.map { SkippedShard(it, ShardSelectionSkipReason.OUTSIDE_BOUND) }
+        skippedShards += boundedShards.map {
+            SkippedShard(it, ShardSelectionSkipReason.OUTSIDE_BOUND, influencesFor(policy, it.id))
+        }
 
         return ShardSelectionPlan(
             selectedShards = selectedShards,
             skippedShards = skippedShards,
-            wasBounded = boundedShards.isNotEmpty()
+            wasBounded = boundedShards.isNotEmpty(),
+            selectedShardDetails = selectedShards.map { shard ->
+                SelectedShardDetail(shard = shard, influences = influencesFor(policy, shard.id))
+            }
         )
     }
 
@@ -82,5 +88,35 @@ class GraphAwareShardSelector(
             shard.id in graphMap.directLinkedShardIds(policy.explicitShardIds) -> 1
             shard.type in ReconstructionRequest.DEFAULT_ALLOWED_SHARD_TYPES -> 2
             else -> 3
+        }
+
+    private fun strongestSeedLinkWeight(policy: ShardSelectionPolicy, shardId: IdentityShardId): Int =
+        if (shardId in policy.explicitShardIds) {
+            Int.MAX_VALUE
+        } else {
+            graphMap.links
+                .filter { it.fromShardId in policy.explicitShardIds && it.toShardId == shardId }
+                .maxOfOrNull { it.weight }
+                ?: if (shardId in graphMap.directLinkedShardIds(policy.explicitShardIds)) {
+                    0
+                } else {
+                    -1
+                }
+        }
+
+    private fun influencesFor(
+        policy: ShardSelectionPolicy,
+        shardId: IdentityShardId
+    ): Set<SelectionInfluence> =
+        buildSet {
+            if (shardId in policy.explicitShardIds) {
+                add(SelectionInfluence.EXPLICIT_SEED)
+            }
+            if (shardId in graphMap.directLinkedShardIds(policy.explicitShardIds)) {
+                add(SelectionInfluence.GRAPH_LINKED)
+            }
+            if (strongestSeedLinkWeight(policy, shardId) > 0 || (graphMap.nodeFor(shardId)?.priority ?: 0) > 0) {
+                add(SelectionInfluence.WEIGHTED_PRIORITY)
+            }
         }
 }

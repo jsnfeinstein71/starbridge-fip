@@ -24,19 +24,35 @@ data class ShardSelectionPolicy(
 data class ShardSelectionPlan(
     val selectedShards: List<IdentityShard>,
     val skippedShards: List<SkippedShard>,
-    val wasBounded: Boolean
+    val wasBounded: Boolean,
+    val selectedShardDetails: List<SelectedShardDetail> = selectedShards.map { SelectedShardDetail(it) }
 ) {
     init {
         require(selectedShards.distinctBy { it.id }.size == selectedShards.size) {
             "selectedShards must not contain duplicate shard ids."
+        }
+        require(selectedShardDetails.map { it.shard.id }.distinct().size == selectedShardDetails.size) {
+            "selectedShardDetails must not contain duplicate shard ids."
         }
     }
 }
 
 data class SkippedShard(
     val shard: IdentityShard,
-    val reason: ShardSelectionSkipReason
+    val reason: ShardSelectionSkipReason,
+    val influences: Set<SelectionInfluence> = emptySet()
 )
+
+data class SelectedShardDetail(
+    val shard: IdentityShard,
+    val influences: Set<SelectionInfluence> = emptySet()
+)
+
+enum class SelectionInfluence {
+    EXPLICIT_SEED,
+    GRAPH_LINKED,
+    WEIGHTED_PRIORITY
+}
 
 enum class ShardSelectionSkipReason {
     SUBJECT_MISMATCH,

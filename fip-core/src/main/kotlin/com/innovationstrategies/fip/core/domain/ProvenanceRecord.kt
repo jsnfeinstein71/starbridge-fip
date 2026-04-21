@@ -33,6 +33,7 @@ enum class ProvenanceReason(
     REQUESTED_EXPLICITLY(supportsInclusion = true, supportsExclusion = false),
     WITHIN_BOUND(supportsInclusion = true, supportsExclusion = false),
     TYPE_NOT_ALLOWED(supportsInclusion = false, supportsExclusion = true),
+    NOT_IN_GRAPH_SELECTION(supportsInclusion = false, supportsExclusion = true),
     EXPLICITLY_EXCLUDED(supportsInclusion = false, supportsExclusion = true),
     SYSTEM_META_DENIED(supportsInclusion = false, supportsExclusion = true),
     OUTSIDE_BOUND(supportsInclusion = false, supportsExclusion = true),

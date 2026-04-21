@@ -9,8 +9,10 @@ import com.innovationstrategies.fip.core.domain.ProvenanceDecision
 import com.innovationstrategies.fip.core.domain.ProvenanceReason
 import com.innovationstrategies.fip.core.domain.ReconstructionPolicy
 import com.innovationstrategies.fip.core.domain.ReconstructionRequest
+import com.innovationstrategies.fip.core.domain.SelectionStageSkip
 import com.innovationstrategies.fip.core.domain.ShardContentExposure
 import com.innovationstrategies.fip.core.domain.ShardType
+import com.innovationstrategies.fip.core.selection.ShardSelectionSkipReason
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -64,6 +66,11 @@ class FipReconstructionEngineTest {
         assertTrue(result.includedShards.isEmpty())
         assertEquals(setOf(shard.id), result.excludedShardIds)
         assertEquals(ProvenanceReason.SUBJECT_MISMATCH, result.provenance.single().reason)
+        assertEquals(
+            listOf(SelectionStageSkip(shard = shard, reason = ShardSelectionSkipReason.SUBJECT_MISMATCH)),
+            result.skippedAtSelection
+        )
+        assertTrue(result.excludedAtReconstruction.isEmpty())
     }
 
     @Test
@@ -128,6 +135,11 @@ class FipReconstructionEngineTest {
         assertTrue(result.includedShards.isEmpty())
         assertEquals(setOf(shard.id), result.excludedShardIds)
         assertEquals(ProvenanceReason.CONTENT_NOT_EXPOSABLE, result.provenance.single().reason)
+        assertTrue(result.skippedAtSelection.isEmpty())
+        assertEquals(1, result.excludedAtReconstruction.size)
+        assertEquals(shard.id, result.excludedAtReconstruction.single().shard.id)
+        assertEquals(ProvenanceReason.CONTENT_NOT_EXPOSABLE, result.excludedAtReconstruction.single().reason)
+        assertEquals(setOf(shard.id), result.nonExposableProtectedContentShards.map { it.shard.id }.toSet())
     }
 
     @Test
@@ -171,6 +183,32 @@ class FipReconstructionEngineTest {
         assertTrue(result.provenance.any {
             it.decision == ProvenanceDecision.EXCLUDED && it.shardId == excluded.id
         })
+    }
+
+    @Test
+    fun `selection stage skips are distinguishable from reconstruction stage exclusions`() {
+        val skipped = shard("ephemeral", subjectId, ShardType.MEMORY_EPHEMERAL)
+        val protectedContent = PlaceholderEncryptedContentProtection.protect("protected payload")
+        val excludedAtReconstruction = IdentityShard(
+            id = IdentityShardId("encrypted"),
+            subjectId = subjectId,
+            type = ShardType.IDENTITY_CORE,
+            version = 1,
+            payload = ProtectedShardContent.PROTECTED_PAYLOAD_PLACEHOLDER,
+            protectedContent = protectedContent,
+            source = "test-source",
+            observedAt = observedAt
+        )
+
+        val result = engine.reconstruct(request(), listOf(skipped, excludedAtReconstruction))
+
+        assertEquals(1, result.selectedShards.size)
+        assertEquals(1, result.skippedAtSelection.size)
+        assertEquals(1, result.excludedAtReconstruction.size)
+        assertEquals(skipped.id, result.skippedAtSelection.single().shard.id)
+        assertEquals(ShardSelectionSkipReason.EXPLICITLY_EXCLUDED, result.skippedAtSelection.single().reason)
+        assertEquals(excludedAtReconstruction.id, result.excludedAtReconstruction.single().shard.id)
+        assertEquals(ProvenanceReason.CONTENT_NOT_EXPOSABLE, result.excludedAtReconstruction.single().reason)
     }
 
     @Test
