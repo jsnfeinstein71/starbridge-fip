@@ -36,6 +36,8 @@ class FipReconstructionEngine(
         val selectedShardReports = mutableListOf<SelectedShardReport>()
         val skippedAtSelection = mutableListOf<SelectionStageSkip>()
         val excludedAtReconstruction = mutableListOf<ReconstructionStageExclusion>()
+        val availableShardIds = shards.map { it.id }.toSet()
+        val unresolvedExplicitShardIds = request.explicitShardIds - availableShardIds
         var payloadBytes = 0
         val selectionPlan = shardSelector.select(
             policy = ShardSelectionPolicy(
@@ -130,6 +132,8 @@ class FipReconstructionEngine(
             selectedShards = selectionPlan.selectedShards,
             includedShards = includedShards,
             excludedShardIds = excludedShardIds,
+            requestedExplicitShardIds = request.explicitShardIds,
+            unresolvedExplicitShardIds = unresolvedExplicitShardIds,
             provenance = provenance,
             maxShardCount = request.maxShardCount,
             wasBounded = wasBounded,

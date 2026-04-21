@@ -1,6 +1,9 @@
 package com.innovationstrategies.fip.cli
 
 import com.innovationstrategies.fip.core.FipVersion
+import com.innovationstrategies.fip.core.artifact.OperationArtifact
+import com.innovationstrategies.fip.core.artifact.OperationArtifactFactory
+import com.innovationstrategies.fip.core.artifact.OperationArtifactFormatter
 import com.innovationstrategies.fip.core.domain.IdentityShard
 import com.innovationstrategies.fip.core.domain.IdentityShardId
 import com.innovationstrategies.fip.core.domain.IdentitySubjectId
@@ -24,6 +27,8 @@ import com.innovationstrategies.fip.storage.file.FileIdentityShardIntegrityCheck
 import com.innovationstrategies.fip.storage.file.FileIdentityShardRepository
 import com.innovationstrategies.fip.storage.file.FileShardGraphMapRepository
 import java.io.PrintStream
+import java.nio.charset.StandardCharsets
+import java.nio.file.Files
 import java.nio.file.Path
 import java.time.Instant
 import kotlin.system.exitProcess
@@ -160,6 +165,8 @@ private fun reconstruct(args: List<String>, out: PrintStream): Int {
 
     out.println("requestId=${result.requestId}")
     out.println("subjectId=${result.subjectId.value}")
+    out.println("requestedExplicitCount=${result.requestedExplicitShardIds.size}")
+    out.println("unresolvedExplicitCount=${result.unresolvedExplicitShardIds.size}")
     out.println("selectedCount=${result.selectedShards.size}")
     out.println("includedCount=${result.includedShards.size}")
     out.println("skippedAtSelectionCount=${result.skippedAtSelection.size}")
@@ -172,6 +179,9 @@ private fun reconstruct(args: List<String>, out: PrintStream): Int {
             "selected id=${report.shard.id.value} type=${report.shard.type.name} version=${report.shard.version} " +
                 "influences=${report.influences.sortedBy { it.name }.joinToString(",") { it.name }}"
         )
+    }
+    result.unresolvedExplicitShardIds.sortedBy { it.value }.forEach { id ->
+        out.println("explicit-unresolved id=${id.value} reason=SHARD_NOT_AVAILABLE")
     }
     result.includedShards.forEach { shard ->
         out.println(
@@ -198,6 +208,11 @@ private fun reconstruct(args: List<String>, out: PrintStream): Int {
                 "decision=${record.decision.name} reason=${record.reason.name}"
         )
     }
+    writeArtifactIfRequested(
+        options = options,
+        artifact = OperationArtifactFactory.reconstruction(result),
+        out = out
+    )
     return 0
 }
 
@@ -217,7 +232,7 @@ private fun saveGraphMap(args: List<String>, out: PrintStream): Int {
             shardId = shardId,
             subjectId = subjectId,
             shardType = ShardType.valueOf(parts[1]),
-            priority = parts[2].toInt(),
+            priority = parseNonNegativeInt(parts[2], "--node priority"),
             linkedShardIds = nodeLinks[shardId].orEmpty().toSet()
         )
     }
@@ -266,6 +281,7 @@ private fun rebuildGraphMap(args: List<String>, out: PrintStream): Int {
     out.println("nodeCount=${graphMap.nodes.size}")
     out.println("linkCount=${graphMap.links.size}")
     out.println("refreshedExisting=${existingGraphMap != null}")
+    out.println("regenerationRule=SUBJECT_SHARDS_WITH_ANCHOR_LINKS")
     return 0
 }
 
@@ -304,6 +320,11 @@ private fun writeBack(args: List<String>, out: PrintStream): Int {
     out.println("graphMapUpdated=$graphMapUpdated")
     result.createdShardIds.sortedBy { it.value }.forEach { out.println("created id=${it.value}") }
     result.deletedShardIds.sortedBy { it.value }.forEach { out.println("deleted id=${it.value}") }
+    writeArtifactIfRequested(
+        options = options,
+        artifact = OperationArtifactFactory.writeBack(result),
+        out = out
+    )
     return 0
 }
 
@@ -335,7 +356,28 @@ private fun checkIntegrity(args: List<String>, out: PrintStream): Int {
             )
         }
     }
+    writeArtifactIfRequested(
+        options = options,
+        artifact = OperationArtifactFactory.integrity(result),
+        out = out
+    )
     return 0
+}
+
+private fun writeArtifactIfRequested(
+    options: CliOptions,
+    artifact: OperationArtifact,
+    out: PrintStream
+) {
+    val artifactOut = options.optional("artifact-out") ?: return
+    val artifactPath = Path.of(artifactOut)
+    artifactPath.parent?.let { Files.createDirectories(it) }
+    Files.writeString(
+        artifactPath,
+        OperationArtifactFormatter.format(artifact),
+        StandardCharsets.UTF_8
+    )
+    out.println("artifactOut=$artifactPath")
 }
 
 private fun repositoryFor(options: CliOptions): FileIdentityShardRepository =
@@ -418,8 +460,14 @@ private fun String.toShardGraphLink(): ShardGraphLink {
     return ShardGraphLink(
         fromShardId = IdentityShardId(parts[0]),
         toShardId = IdentityShardId(parts[1]),
-        weight = parts[2].toInt()
+        weight = parseNonNegativeInt(parts[2], "--link weight")
     )
+}
+
+private fun parseNonNegativeInt(value: String, label: String): Int {
+    val parsed = value.toIntOrNull()
+    require(parsed != null && parsed >= 0) { "$label must be a non-negative integer." }
+    return parsed
 }
 
 private fun parseOptions(args: List<String>): CliOptions {
@@ -473,9 +521,9 @@ private fun printUsage(out: PrintStream) {
     out.println("  load-shard --store <dir> --id <id>")
     out.println("  list-shards --store <dir> --subject <subject>")
     out.println("  delete-shard --store <dir> --id <id>")
-    out.println("  reconstruct --store <dir> --request-id <id> --subject <subject> --task-type <type> --surface <surface> --max-shards <n> [--max-payload-bytes <n>] [--allowed-types A,B] [--excluded-types A,B] [--shard-id <id>] [--allow-system-meta] [--use-graph-map]")
-    out.println("  write-back --store <dir> --request-id <id> --subject <subject> --task-type <type> --surface <surface> --type <ShardType> --payload <text> --source <source> [--content-mode PLAINTEXT|ENCRYPTED_PLACEHOLDER] [--replace-id <id>] [--tag <tag>] [--tags a,b] [--max-replacement-source-shards <n>] [--max-payload-bytes <n>] [--allow-system-meta]")
-    out.println("  check-integrity --store <dir>")
+    out.println("  reconstruct --store <dir> --request-id <id> --subject <subject> --task-type <type> --surface <surface> --max-shards <n> [--max-payload-bytes <n>] [--allowed-types A,B] [--excluded-types A,B] [--shard-id <id>] [--allow-system-meta] [--use-graph-map] [--artifact-out <path>]")
+    out.println("  write-back --store <dir> --request-id <id> --subject <subject> --task-type <type> --surface <surface> --type <ShardType> --payload <text> --source <source> [--content-mode PLAINTEXT|ENCRYPTED_PLACEHOLDER] [--replace-id <id>] [--tag <tag>] [--tags a,b] [--max-replacement-source-shards <n>] [--max-payload-bytes <n>] [--allow-system-meta] [--artifact-out <path>]")
+    out.println("  check-integrity --store <dir> [--artifact-out <path>]")
     out.println("  save-graph-map --store <dir> --subject <subject> [--node <shardId>:<ShardType>:<priority>] [--node-link <fromShardId>:<toShardId>] [--link <fromShardId>:<toShardId>:<weight>]")
     out.println("  load-graph-map --store <dir> --subject <subject>")
     out.println("  rebuild-graph-map --store <dir> --subject <subject>")

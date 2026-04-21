@@ -9,6 +9,8 @@ data class ReconstructionResult(
     val selectedShards: List<IdentityShard>,
     val includedShards: List<IdentityShard>,
     val excludedShardIds: Set<IdentityShardId>,
+    val requestedExplicitShardIds: Set<IdentityShardId>,
+    val unresolvedExplicitShardIds: Set<IdentityShardId>,
     val provenance: List<ProvenanceRecord>,
     val maxShardCount: Int,
     val wasBounded: Boolean,

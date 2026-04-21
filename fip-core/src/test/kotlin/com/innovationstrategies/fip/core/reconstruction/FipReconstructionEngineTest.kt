@@ -212,6 +212,22 @@ class FipReconstructionEngineTest {
     }
 
     @Test
+    fun `missing explicit shard ids are reported without explicit seed influence`() {
+        val available = shard("available", subjectId, ShardType.IDENTITY_CORE)
+        val missingId = IdentityShardId("missing-explicit")
+
+        val result = engine.reconstruct(
+            request(explicitShardIds = setOf(missingId)),
+            listOf(available)
+        )
+
+        assertEquals(setOf(missingId), result.requestedExplicitShardIds)
+        assertEquals(setOf(missingId), result.unresolvedExplicitShardIds)
+        assertEquals(listOf(available), result.selectedShards)
+        assertTrue(result.selectedShardReports.single().influences.isEmpty())
+    }
+
+    @Test
     fun `explicitly excluded shard types are excluded by policy`() {
         val shard = shard("baseline", subjectId, ShardType.ACL_BASELINE)
         val request = request(allowedShardTypes = ReconstructionRequest.DEFAULT_ALLOWED_SHARD_TYPES + ShardType.ACL_BASELINE)

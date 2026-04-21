@@ -101,6 +101,8 @@ class MainTest {
 
         assertEquals(0, result.exitCode)
         assertTrue(result.out.contains("requestId=request-1"))
+        assertTrue(result.out.contains("requestedExplicitCount=0"))
+        assertTrue(result.out.contains("unresolvedExplicitCount=0"))
         assertTrue(result.out.contains("selectedCount=1"))
         assertTrue(result.out.contains("includedCount=1"))
         assertTrue(result.out.contains("skippedAtSelectionCount=1"))
@@ -111,6 +113,76 @@ class MainTest {
         assertTrue(result.out.contains("selection-skip id=ephemeral type=MEMORY_EPHEMERAL reason=EXPLICITLY_EXCLUDED"))
         assertTrue(result.out.contains("provenance shardId=core type=IDENTITY_CORE decision=INCLUDED"))
         assertTrue(result.out.contains("provenance shardId=ephemeral type=MEMORY_EPHEMERAL decision=EXCLUDED"))
+    }
+
+    @Test
+    fun `reconstruct can export structured artifact`() {
+        val store = Files.createTempDirectory("fip-cli-test")
+        val artifact = store.resolve("artifacts/reconstruction.properties")
+        runSave(store.toString(), "core", "subject-1", "IDENTITY_CORE")
+
+        val result = run(
+            "reconstruct",
+            "--store", store.toString(),
+            "--request-id", "request-1",
+            "--subject", "subject-1",
+            "--task-type", "cli-test",
+            "--surface", "terminal",
+            "--max-shards", "10",
+            "--artifact-out", artifact.toString()
+        )
+        val artifactText = Files.readString(artifact)
+
+        assertEquals(0, result.exitCode)
+        assertTrue(result.out.contains("artifactOut=$artifact"))
+        assertTrue(artifactText.contains("formatVersion=1"))
+        assertTrue(artifactText.contains("operationType=RECONSTRUCTION"))
+        assertTrue(artifactText.contains("field.requestId=request-1"))
+        assertTrue(artifactText.contains("field.subjectId=subject-1"))
+        assertTrue(artifactText.contains("field.includedCount=1"))
+        assertTrue(artifactText.contains("entry.0.kind=selected"))
+        assertTrue(artifactText.contains("shardId=core"))
+        assertTrue(artifactText.contains("kind=provenance"))
+    }
+
+    @Test
+    fun `reconstruct reports missing explicit shard id clearly`() {
+        val store = Files.createTempDirectory("fip-cli-test").toString()
+        runSave(store, "core", "subject-1", "IDENTITY_CORE")
+
+        val result = run(
+            "reconstruct",
+            "--store", store,
+            "--request-id", "request-1",
+            "--subject", "subject-1",
+            "--task-type", "cli-test",
+            "--surface", "terminal",
+            "--max-shards", "10",
+            "--shard-id", "missing-explicit",
+            "--use-graph-map"
+        )
+
+        assertEquals(0, result.exitCode)
+        assertTrue(result.out.contains("requestedExplicitCount=1"))
+        assertTrue(result.out.contains("unresolvedExplicitCount=1"))
+        assertTrue(result.out.contains("explicit-unresolved id=missing-explicit reason=SHARD_NOT_AVAILABLE"))
+        assertTrue(!result.out.contains("influences=EXPLICIT_SEED"))
+        assertTrue(result.out.contains("included id=core type=IDENTITY_CORE version=1"))
+    }
+
+    @Test
+    fun `save graph map reports invalid non integer priority clearly`() {
+        val store = Files.createTempDirectory("fip-cli-test").toString()
+
+        val result = run(
+            "save-graph-map",
+            "--store", store,
+            "--subject", "subject-1",
+            "--node", "seed:IDENTITY_CORE:not-a-number"
+        )
+
+        assertEquals(1, result.exitCode)
+        assertTrue(result.err.contains("Error: --node priority must be a non-negative integer."))
     }
 
     @Test
@@ -214,6 +286,7 @@ class MainTest {
         assertTrue(rebuild.out.contains("shardCount=2"))
         assertTrue(rebuild.out.contains("nodeCount=2"))
         assertTrue(rebuild.out.contains("refreshedExisting=false"))
+        assertTrue(rebuild.out.contains("regenerationRule=SUBJECT_SHARDS_WITH_ANCHOR_LINKS"))
         assertTrue(load.out.contains("node shardId=core subjectId=subject-1 type=IDENTITY_CORE"))
         assertTrue(load.out.contains("node shardId=prefs subjectId=subject-1 type=IDENTITY_PREFS"))
         assertTrue(load.out.contains("link fromShardId=core toShardId=prefs"))
@@ -319,6 +392,32 @@ class MainTest {
         assertTrue(writeBack.out.contains("wasBounded=false"))
         assertTrue(writeBack.out.contains("created id=shard-"))
         assertTrue(writeBack.out.contains("deleted id=prior-core"))
+    }
+
+    @Test
+    fun `write-back can export structured artifact`() {
+        val store = Files.createTempDirectory("fip-cli-test")
+        val artifact = store.resolve("artifacts/write-back.properties")
+        runSave(store.toString(), "prior-core", "subject-1", "IDENTITY_CORE")
+
+        val writeBack = runWriteBack(
+            store = store.toString(),
+            extraArgs = arrayOf("--artifact-out", artifact.toString())
+        )
+        val artifactText = Files.readString(artifact)
+
+        assertEquals(0, writeBack.exitCode)
+        assertTrue(writeBack.out.contains("artifactOut=$artifact"))
+        assertTrue(artifactText.contains("operationType=WRITE_BACK"))
+        assertTrue(artifactText.contains("field.requestId=request-1"))
+        assertTrue(artifactText.contains("field.subjectId=subject-1"))
+        assertTrue(artifactText.contains("field.createdCount=1"))
+        assertTrue(artifactText.contains("field.replacedCount=1"))
+        assertTrue(artifactText.contains("field.deletedCount=1"))
+        assertTrue(artifactText.contains("kind=created"))
+        assertTrue(artifactText.contains("kind=replaced"))
+        assertTrue(artifactText.contains("kind=deleted"))
+        assertTrue(artifactText.contains("shardId=prior-core"))
     }
 
     @Test
@@ -518,6 +617,48 @@ class MainTest {
         assertTrue(result.out.contains("isValid=false"))
         assertTrue(result.out.contains("code=DUPLICATE_SHARD_ID"))
         assertTrue(result.out.contains("shardId=duplicate-id"))
+    }
+
+    @Test
+    fun `check-integrity can export structured artifact`() {
+        val store = Files.createTempDirectory("fip-cli-test")
+        val artifact = store.resolve("artifacts/integrity.properties")
+        writeShardFile(
+            store.resolve("invalid.shard.properties"),
+            """
+            formatVersion=1
+            id=bad-shard
+            subjectId=subject-1
+            type=NOT_A_TYPE
+            version=1
+            source=cli-test
+            observedAt=2026-04-20T00:00:00Z
+            contentMode=PLAINTEXT
+            contentValue=payload
+            contentAlgorithm=PLAINTEXT-DEVELOPMENT
+            tagCount=0
+            """.trimIndent()
+        )
+
+        val result = run(
+            "check-integrity",
+            "--store", store.toString(),
+            "--artifact-out", artifact.toString()
+        )
+        val artifactText = Files.readString(artifact)
+
+        assertEquals(0, result.exitCode)
+        assertTrue(result.out.contains("artifactOut=$artifact"))
+        assertTrue(artifactText.contains("operationType=INTEGRITY_CHECK"))
+        assertTrue(artifactText.contains("field.checkedCount=1"))
+        assertTrue(artifactText.contains("field.validCount=0"))
+        assertTrue(artifactText.contains("field.invalidCount=1"))
+        assertTrue(artifactText.contains("field.isValid=false"))
+        assertTrue(artifactText.contains("kind=record"))
+        assertTrue(artifactText.contains("kind=issue"))
+        assertTrue(artifactText.contains("code=INVALID_SHARD_TYPE"))
+        assertTrue(artifactText.contains("shardId=bad-shard"))
+        assertTrue(artifactText.contains("subjectId=subject-1"))
     }
 
     private fun runSave(
