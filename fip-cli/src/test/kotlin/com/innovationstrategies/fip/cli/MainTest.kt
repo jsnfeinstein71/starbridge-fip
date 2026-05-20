@@ -661,6 +661,322 @@ class MainTest {
         assertTrue(artifactText.contains("subjectId=subject-1"))
     }
 
+    @Test
+    fun `object manifest can be saved and loaded through cli`() {
+        val store = Files.createTempDirectory("fip-cli-test").toString()
+
+        val put = runPutObjectManifest(store)
+        val load = run("load-object-manifest", "--store", store, "--object-id", "object-1")
+
+        assertEquals(0, put.exitCode)
+        assertEquals(0, load.exitCode)
+        assertTrue(put.out.contains("savedObjectManifest objectId=object-1"))
+        assertTrue(load.out.contains("objectManifest objectId=object-1 name=Object Packet assetType=document-bundle owner=owner-1"))
+        assertTrue(load.out.contains("sensitivities=restricted"))
+        assertTrue(load.out.contains("relatedShardIds=shard-a,shard-b"))
+        assertTrue(load.out.contains("definedViews=analysis-preview,audit-trace"))
+        assertTrue(load.out.contains("allowedViews=analysis-preview"))
+    }
+
+    @Test
+    fun `object manifests can be listed and deleted through cli`() {
+        val store = Files.createTempDirectory("fip-cli-test").toString()
+        runPutObjectManifest(store, objectId = "object-1")
+        runPutObjectManifest(store, objectId = "object-2")
+
+        val listBeforeDelete = run("list-object-manifests", "--store", store)
+        val delete = run("delete-object-manifest", "--store", store, "--object-id", "object-1")
+        val listAfterDelete = run("list-object-manifests", "--store", store)
+        val loadDeleted = run("load-object-manifest", "--store", store, "--object-id", "object-1")
+
+        assertEquals(0, listBeforeDelete.exitCode)
+        assertTrue(listBeforeDelete.out.contains("count=2"))
+        assertTrue(listBeforeDelete.out.contains("objectManifest objectId=object-1"))
+        assertTrue(listBeforeDelete.out.contains("objectManifest objectId=object-2"))
+        assertEquals(0, delete.exitCode)
+        assertTrue(delete.out.contains("deleted objectId=object-1"))
+        assertTrue(listAfterDelete.out.contains("count=1"))
+        assertTrue(!listAfterDelete.out.contains("objectManifest objectId=object-1"))
+        assertTrue(loadDeleted.out.contains("not-found objectId=object-1"))
+    }
+
+    @Test
+    fun `reconstruction planning preview succeeds for allowed view`() {
+        val store = Files.createTempDirectory("fip-cli-test").toString()
+        runPutObjectManifest(store)
+
+        val plan = run(
+            "plan-object-reconstruction",
+            "--store", store,
+            "--object-id", "object-1",
+            "--view", "analysis-preview",
+            "--purpose", "operator-preview",
+            "--requester", "requester-1"
+        )
+
+        assertEquals(0, plan.exitCode)
+        assertTrue(plan.out.contains("objectId=object-1"))
+        assertTrue(plan.out.contains("requestedView=analysis-preview"))
+        assertTrue(plan.out.contains("status=ALLOWED"))
+        assertTrue(plan.out.contains("denialReasons="))
+        assertTrue(plan.out.contains("selectedShardCount=2"))
+        assertTrue(plan.out.contains("selectedShardId=shard-a"))
+        assertTrue(plan.out.contains("selectedShardId=shard-b"))
+        assertTrue(plan.out.contains("includedMetadataLevels=OBSERVED,OWNER_APPROVED"))
+        assertTrue(plan.out.contains("traceStatus=AUTHORIZED_PLACEHOLDER"))
+    }
+
+    @Test
+    fun `reconstruction planning preview denies unknown view clearly`() {
+        val store = Files.createTempDirectory("fip-cli-test").toString()
+        runPutObjectManifest(store)
+
+        val plan = run(
+            "plan-object-reconstruction",
+            "--store", store,
+            "--object-id", "object-1",
+            "--view", "unknown-view"
+        )
+
+        assertEquals(0, plan.exitCode)
+        assertTrue(plan.out.contains("status=DENIED"))
+        assertTrue(plan.out.contains("denialReasons=UNKNOWN_VIEW"))
+        assertTrue(plan.out.contains("selectedShardCount=0"))
+        assertTrue(plan.out.contains("traceStatus=DENIED_PLACEHOLDER"))
+    }
+
+    @Test
+    fun `reconstruction planning preview denies disallowed view clearly`() {
+        val store = Files.createTempDirectory("fip-cli-test").toString()
+        runPutObjectManifest(store)
+
+        val plan = run(
+            "plan-object-reconstruction",
+            "--store", store,
+            "--object-id", "object-1",
+            "--view", "audit-trace"
+        )
+
+        assertEquals(0, plan.exitCode)
+        assertTrue(plan.out.contains("status=DENIED"))
+        assertTrue(plan.out.contains("denialReasons=REQUESTED_VIEW_NOT_ALLOWED"))
+    }
+
+    @Test
+    fun `provider and audit posture appears in object manifest and planning output`() {
+        val store = Files.createTempDirectory("fip-cli-test").toString()
+        runPutObjectManifest(
+            store = store,
+            extraArgs = arrayOf(
+                "--provider-exposure-posture", "BOUNDED_VIEW_ONLY",
+                "--audit-required", "true"
+            )
+        )
+
+        val load = run("load-object-manifest", "--store", store, "--object-id", "object-1")
+        val plan = run(
+            "plan-object-reconstruction",
+            "--store", store,
+            "--object-id", "object-1",
+            "--view", "analysis-preview",
+            "--requires-provider-exposure"
+        )
+
+        assertEquals(0, load.exitCode)
+        assertEquals(0, plan.exitCode)
+        assertTrue(load.out.contains("providerExposurePosture=BOUNDED_VIEW_ONLY"))
+        assertTrue(load.out.contains("auditRequired=true"))
+        assertTrue(plan.out.contains("providerExposurePosture=BOUNDED_VIEW_ONLY"))
+        assertTrue(plan.out.contains("providerOutputAuthority=PROPOSAL_ONLY"))
+        assertTrue(plan.out.contains("auditRequired=true"))
+    }
+
+    @Test
+    fun `allowed object view produces approved packet through cli`() {
+        val store = Files.createTempDirectory("fip-cli-test").toString()
+        runPutObjectManifest(
+            store = store,
+            extraArgs = arrayOf("--provider-exposure-posture", "BOUNDED_VIEW_ONLY")
+        )
+
+        val packet = run(
+            "build-object-packet",
+            "--store", store,
+            "--object-id", "object-1",
+            "--view", "analysis-preview",
+            "--purpose", "operator-preview",
+            "--requester", "requester-1",
+            "--requires-provider-exposure"
+        )
+
+        assertEquals(0, packet.exitCode)
+        assertTrue(packet.out.contains("packetType=FIP_RECONSTRUCTION_PACKET_V1"))
+        assertTrue(packet.out.contains("objectId=object-1"))
+        assertTrue(packet.out.contains("requestedView=analysis-preview"))
+        assertTrue(packet.out.contains("allowedUse=operator-preview"))
+        assertTrue(packet.out.contains("status=ALLOWED"))
+        assertTrue(packet.out.contains("isApproved=true"))
+        assertTrue(packet.out.contains("selectedShardId=shard-a"))
+        assertTrue(packet.out.contains("selectedShardId=shard-b"))
+        assertTrue(packet.out.contains("selectedMetadataLevels=OBSERVED,OWNER_APPROVED"))
+        assertTrue(packet.out.contains("providerExposurePosture=BOUNDED_VIEW_ONLY"))
+        assertTrue(packet.out.contains("providerOutputAuthority=PROPOSAL_ONLY"))
+        assertTrue(packet.out.contains("auditRequired=true"))
+        assertTrue(packet.out.contains("traceStatus=AUTHORIZED_PLACEHOLDER"))
+    }
+
+    @Test
+    fun `denied object view produces denied packet with reason through cli`() {
+        val store = Files.createTempDirectory("fip-cli-test").toString()
+        runPutObjectManifest(store)
+
+        val packet = run(
+            "build-object-packet",
+            "--store", store,
+            "--object-id", "object-1",
+            "--view", "audit-trace",
+            "--purpose", "operator-preview"
+        )
+
+        assertEquals(0, packet.exitCode)
+        assertTrue(packet.out.contains("status=DENIED"))
+        assertTrue(packet.out.contains("isApproved=false"))
+        assertTrue(packet.out.contains("denialReasons=REQUESTED_VIEW_NOT_ALLOWED"))
+        assertTrue(packet.out.contains("blockedReasons=REQUESTED_VIEW_NOT_ALLOWED"))
+        assertTrue(packet.out.contains("selectedShardCount=0"))
+        assertTrue(packet.out.contains("traceStatus=DENIED_PLACEHOLDER"))
+    }
+
+    @Test
+    fun `allowed object packet artifact export works`() {
+        val store = Files.createTempDirectory("fip-cli-test")
+        val artifact = store.resolve("artifacts/allowed-packet.properties")
+        runPutObjectManifest(
+            store = store.toString(),
+            extraArgs = arrayOf("--provider-exposure-posture", "BOUNDED_VIEW_ONLY")
+        )
+
+        val packet = run(
+            "build-object-packet",
+            "--store", store.toString(),
+            "--object-id", "object-1",
+            "--view", "analysis-preview",
+            "--purpose", "operator-preview",
+            "--requires-provider-exposure",
+            "--artifact-out", artifact.toString()
+        )
+        val artifactText = Files.readString(artifact)
+
+        assertEquals(0, packet.exitCode)
+        assertTrue(packet.out.contains("artifactOut=$artifact"))
+        assertTrue(artifactText.contains("operationType=FIP_RECONSTRUCTION_PACKET"))
+        assertTrue(artifactText.contains("field.objectId=object-1"))
+        assertTrue(artifactText.contains("field.requestedView=analysis-preview"))
+        assertTrue(artifactText.contains("field.allowedUse=operator-preview"))
+        assertTrue(artifactText.contains("field.status=ALLOWED"))
+        assertTrue(artifactText.contains("field.isApproved=true"))
+        assertTrue(artifactText.contains("field.selectedShardCount=2"))
+        assertTrue(artifactText.contains("shardId=shard-a"))
+        assertTrue(artifactText.contains("shardId=shard-b"))
+        assertTrue(artifactText.contains("level=OBSERVED"))
+        assertTrue(artifactText.contains("level=OWNER_APPROVED"))
+    }
+
+    @Test
+    fun `denied object packet artifact export works`() {
+        val store = Files.createTempDirectory("fip-cli-test")
+        val artifact = store.resolve("artifacts/denied-packet.properties")
+        runPutObjectManifest(store.toString())
+
+        val packet = run(
+            "build-object-packet",
+            "--store", store.toString(),
+            "--object-id", "object-1",
+            "--view", "audit-trace",
+            "--purpose", "operator-preview",
+            "--artifact-out", artifact.toString()
+        )
+        val artifactText = Files.readString(artifact)
+
+        assertEquals(0, packet.exitCode)
+        assertTrue(packet.out.contains("artifactOut=$artifact"))
+        assertTrue(artifactText.contains("operationType=FIP_RECONSTRUCTION_PACKET"))
+        assertTrue(artifactText.contains("field.status=DENIED"))
+        assertTrue(artifactText.contains("field.isApproved=false"))
+        assertTrue(artifactText.contains("field.denialReasons=REQUESTED_VIEW_NOT_ALLOWED"))
+        assertTrue(artifactText.contains("field.blockedReasons=REQUESTED_VIEW_NOT_ALLOWED"))
+        assertTrue(artifactText.contains("reason=REQUESTED_VIEW_NOT_ALLOWED"))
+        assertTrue(artifactText.contains("field.selectedShardCount=0"))
+    }
+
+    @Test
+    fun `same object with two views produces different packet artifacts`() {
+        val store = Files.createTempDirectory("fip-cli-test")
+        val analysisArtifact = store.resolve("artifacts/analysis-packet.properties")
+        val summaryArtifact = store.resolve("artifacts/summary-packet.properties")
+        runPutObjectManifest(
+            store = store.toString(),
+            extraArgs = arrayOf("--view", "summary-preview")
+        )
+
+        val analysisPacket = run(
+            "build-object-packet",
+            "--store", store.toString(),
+            "--object-id", "object-1",
+            "--view", "analysis-preview",
+            "--purpose", "operator-preview",
+            "--artifact-out", analysisArtifact.toString()
+        )
+        val summaryPacket = run(
+            "build-object-packet",
+            "--store", store.toString(),
+            "--object-id", "object-1",
+            "--view", "summary-preview",
+            "--purpose", "operator-preview",
+            "--artifact-out", summaryArtifact.toString()
+        )
+        val analysisText = Files.readString(analysisArtifact)
+        val summaryText = Files.readString(summaryArtifact)
+
+        assertEquals(0, analysisPacket.exitCode)
+        assertEquals(0, summaryPacket.exitCode)
+        assertTrue(analysisText.contains("field.objectId=object-1"))
+        assertTrue(summaryText.contains("field.objectId=object-1"))
+        assertTrue(analysisText.contains("field.requestedView=analysis-preview"))
+        assertTrue(summaryText.contains("field.requestedView=summary-preview"))
+        assertTrue(analysisText.contains("field.status=ALLOWED"))
+        assertTrue(summaryText.contains("field.status=ALLOWED"))
+        assertTrue(analysisText != summaryText)
+    }
+
+    @Test
+    fun `provider exposure and audit posture appear in packet artifact`() {
+        val store = Files.createTempDirectory("fip-cli-test")
+        val artifact = store.resolve("artifacts/provider-audit-packet.properties")
+        runPutObjectManifest(
+            store = store.toString(),
+            extraArgs = arrayOf(
+                "--provider-exposure-posture", "BOUNDED_VIEW_ONLY",
+                "--audit-required", "true"
+            )
+        )
+
+        val packet = run(
+            "build-object-packet",
+            "--store", store.toString(),
+            "--object-id", "object-1",
+            "--view", "analysis-preview",
+            "--requires-provider-exposure",
+            "--artifact-out", artifact.toString()
+        )
+        val artifactText = Files.readString(artifact)
+
+        assertEquals(0, packet.exitCode)
+        assertTrue(artifactText.contains("field.providerExposurePosture=BOUNDED_VIEW_ONLY"))
+        assertTrue(artifactText.contains("field.providerOutputAuthority=PROPOSAL_ONLY"))
+        assertTrue(artifactText.contains("field.auditRequired=true"))
+    }
+
     private fun runSave(
         store: String,
         id: String,
@@ -700,6 +1016,30 @@ class MainTest {
                 "--payload", "updated payload",
                 "--source", "cli-test",
                 "--tag", "write-back"
+            ),
+            *extraArgs
+        )
+
+    private fun runPutObjectManifest(
+        store: String,
+        objectId: String = "object-1",
+        extraArgs: Array<String> = emptyArray()
+    ): CliRun =
+        run(
+            *arrayOf(
+                "put-object-manifest",
+                "--store", store,
+                "--object-id", objectId,
+                "--name", "Object Packet",
+                "--asset-type", "document-bundle",
+                "--owner", "owner-1",
+                "--sensitivity", "restricted",
+                "--shard-id", "shard-a",
+                "--shard-id", "shard-b",
+                "--view", "analysis-preview",
+                "--denied-view", "audit-trace",
+                "--metadata-level", "OBSERVED",
+                "--metadata-level", "OWNER_APPROVED"
             ),
             *extraArgs
         )

@@ -20,9 +20,26 @@ import com.innovationstrategies.fip.core.selection.ShardGraphLink
 import com.innovationstrategies.fip.core.selection.ShardGraphMap
 import com.innovationstrategies.fip.core.selection.ShardGraphMapRegenerator
 import com.innovationstrategies.fip.core.selection.ShardGraphNode
+import com.innovationstrategies.fip.core.vault.FipAssetType
+import com.innovationstrategies.fip.core.vault.FipObjectId
+import com.innovationstrategies.fip.core.vault.FipObjectManifest
+import com.innovationstrategies.fip.core.vault.FipObjectMetadata
+import com.innovationstrategies.fip.core.vault.FipObjectMetadataLevel
+import com.innovationstrategies.fip.core.vault.FipObjectPolicy
+import com.innovationstrategies.fip.core.vault.FipObjectView
+import com.innovationstrategies.fip.core.vault.FipObjectViewPolicy
+import com.innovationstrategies.fip.core.vault.FipReconstructionPlanner
+import com.innovationstrategies.fip.core.vault.FipReconstructionPacket
+import com.innovationstrategies.fip.core.vault.FipReconstructionPacketFactory
+import com.innovationstrategies.fip.core.vault.ProviderExposurePolicy
+import com.innovationstrategies.fip.core.vault.ProviderExposurePosture
+import com.innovationstrategies.fip.core.vault.ReconstructionContext
+import com.innovationstrategies.fip.core.vault.ReconstructionPurpose
+import com.innovationstrategies.fip.core.vault.ReconstructionViewRequest
 import com.innovationstrategies.fip.core.writeback.FipWriteBackEngine
 import com.innovationstrategies.fip.core.writeback.IdentityUpdateRequest
 import com.innovationstrategies.fip.core.writeback.ShardGraphMapWriteBackUpdater
+import com.innovationstrategies.fip.storage.file.FileFipObjectManifestRepository
 import com.innovationstrategies.fip.storage.file.FileIdentityShardIntegrityChecker
 import com.innovationstrategies.fip.storage.file.FileIdentityShardRepository
 import com.innovationstrategies.fip.storage.file.FileShardGraphMapRepository
@@ -55,6 +72,12 @@ fun runCli(args: Array<String>, out: PrintStream, err: PrintStream): Int {
             "save-graph-map" -> saveGraphMap(args.drop(1), out)
             "load-graph-map" -> loadGraphMap(args.drop(1), out)
             "rebuild-graph-map" -> rebuildGraphMap(args.drop(1), out)
+            "put-object-manifest" -> putObjectManifest(args.drop(1), out)
+            "load-object-manifest" -> loadObjectManifest(args.drop(1), out)
+            "list-object-manifests" -> listObjectManifests(args.drop(1), out)
+            "delete-object-manifest" -> deleteObjectManifest(args.drop(1), out)
+            "plan-object-reconstruction" -> planObjectReconstruction(args.drop(1), out)
+            "build-object-packet" -> buildObjectPacket(args.drop(1), out)
             "version" -> {
                 out.println("FIP CLI v${FipVersion.VALUE}")
                 0
@@ -285,6 +308,163 @@ private fun rebuildGraphMap(args: List<String>, out: PrintStream): Int {
     return 0
 }
 
+private fun putObjectManifest(args: List<String>, out: PrintStream): Int {
+    val options = parseOptions(args)
+    val views = options.values("view").map { FipObjectView(it) }.toSet()
+    require(views.isNotEmpty()) { "At least one --view is required." }
+    val deniedViews = options.values("denied-view").map { FipObjectView(it) }.toSet()
+    val includedMetadataLevels = options.optional("metadata-levels")
+        ?.toMetadataLevelSet()
+        ?: options.values("metadata-level").map { FipObjectMetadataLevel.valueOf(it) }.toSet()
+    val providerExposurePolicy = ProviderExposurePolicy(
+        posture = ProviderExposurePosture.valueOf(
+            options.optional("provider-exposure-posture") ?: ProviderExposurePosture.NO_PROVIDER_DECRYPTION.name
+        )
+    )
+    val auditRequired = options.optional("audit-required")?.toBooleanStrict() ?: true
+    val viewPolicies = views.associateWith { view ->
+        FipObjectViewPolicy(
+            view = view,
+            allowedShardIds = null,
+            includedMetadataLevels = includedMetadataLevels,
+            providerExposurePolicy = providerExposurePolicy,
+            auditRequired = auditRequired
+        )
+    }
+    val manifest = FipObjectManifest(
+        objectId = FipObjectId(options.required("object-id")),
+        name = options.required("name"),
+        assetType = FipAssetType(options.required("asset-type")),
+        owner = IdentitySubjectId(options.required("owner")),
+        sensitivityLabels = options.values("sensitivity").toSet(),
+        relatedShardIds = options.values("shard-id").map { IdentityShardId(it) }.toSet(),
+        metadata = FipObjectMetadata(),
+        policy = FipObjectPolicy(
+            definedViews = views + deniedViews,
+            allowedViews = views,
+            viewPolicies = viewPolicies,
+            providerExposurePolicy = providerExposurePolicy,
+            auditRequired = auditRequired
+        )
+    )
+
+    objectManifestRepositoryFor(options).save(manifest)
+
+    out.println("savedObjectManifest objectId=${manifest.objectId.value}")
+    out.println("viewCount=${manifest.policy.definedViews.size}")
+    out.println("allowedViewCount=${manifest.policy.allowedViews.size}")
+    out.println("relatedShardCount=${manifest.relatedShardIds.size}")
+    out.println("auditRequired=${manifest.policy.auditRequired}")
+    out.println("providerExposurePosture=${manifest.policy.providerExposurePolicy.posture.name}")
+    return 0
+}
+
+private fun loadObjectManifest(args: List<String>, out: PrintStream): Int {
+    val options = parseOptions(args)
+    val objectId = FipObjectId(options.required("object-id"))
+    val manifest = objectManifestRepositoryFor(options).load(objectId)
+
+    if (manifest == null) {
+        out.println("not-found objectId=${objectId.value}")
+        return 0
+    }
+
+    printObjectManifest(out, manifest)
+    return 0
+}
+
+private fun listObjectManifests(args: List<String>, out: PrintStream): Int {
+    val options = parseOptions(args)
+    val manifests = objectManifestRepositoryFor(options).list()
+
+    out.println("count=${manifests.size}")
+    manifests.forEach { manifest ->
+        out.println(
+            "objectManifest objectId=${manifest.objectId.value} name=${manifest.name} " +
+                "assetType=${manifest.assetType.value} owner=${manifest.owner.value} " +
+                "viewCount=${manifest.policy.definedViews.size} relatedShardCount=${manifest.relatedShardIds.size}"
+        )
+    }
+    return 0
+}
+
+private fun deleteObjectManifest(args: List<String>, out: PrintStream): Int {
+    val options = parseOptions(args)
+    val objectId = FipObjectId(options.required("object-id"))
+    val deleted = objectManifestRepositoryFor(options).delete(objectId)
+    out.println("${if (deleted) "deleted" else "not-found"} objectId=${objectId.value}")
+    return 0
+}
+
+private fun planObjectReconstruction(args: List<String>, out: PrintStream): Int {
+    val options = parseOptions(args)
+    val objectId = FipObjectId(options.required("object-id"))
+    val manifest = objectManifestRepositoryFor(options).load(objectId)
+    if (manifest == null) {
+        out.println("not-found objectId=${objectId.value}")
+        return 0
+    }
+
+    val plan = FipReconstructionPlanner().plan(
+        manifest = manifest,
+        request = ReconstructionViewRequest(
+            requestedView = FipObjectView(options.required("view")),
+            purpose = ReconstructionPurpose(options.optional("purpose") ?: "cli-preview")
+        ),
+        context = ReconstructionContext(
+            requester = options.optional("requester")?.let { IdentitySubjectId(it) },
+            requiresProviderExposure = options.flag("requires-provider-exposure")
+        )
+    )
+
+    out.println("objectId=${plan.objectId.value}")
+    out.println("requestedView=${plan.requestedView.value}")
+    out.println("status=${plan.status.name}")
+    out.println("denialReasons=${plan.denialReasons.sortedBy { it.name }.joinToString(",") { it.name }}")
+    out.println("selectedShardCount=${plan.selectedShardIds.size}")
+    plan.selectedShardIds.sortedBy { it.value }.forEach { out.println("selectedShardId=${it.value}") }
+    out.println("includedMetadataLevels=${plan.includedMetadataLevels.sortedBy { it.name }.joinToString(",") { it.name }}")
+    out.println("excludedMetadataLevels=${plan.excludedMetadataLevels.sortedBy { it.name }.joinToString(",") { it.name }}")
+    out.println("providerExposurePosture=${plan.providerExposurePosture.name}")
+    out.println("providerOutputAuthority=${plan.providerOutputAuthority.name}")
+    out.println("auditRequired=${plan.auditRequired}")
+    out.println("traceId=${plan.reconstructionTrace.traceId}")
+    out.println("traceStatus=${plan.reconstructionTrace.status.name}")
+    return 0
+}
+
+private fun buildObjectPacket(args: List<String>, out: PrintStream): Int {
+    val options = parseOptions(args)
+    val objectId = FipObjectId(options.required("object-id"))
+    val manifest = objectManifestRepositoryFor(options).load(objectId)
+    if (manifest == null) {
+        out.println("not-found objectId=${objectId.value}")
+        return 0
+    }
+
+    val purpose = ReconstructionPurpose(options.optional("purpose") ?: "cli-packet")
+    val plan = FipReconstructionPlanner().plan(
+        manifest = manifest,
+        request = ReconstructionViewRequest(
+            requestedView = FipObjectView(options.required("view")),
+            purpose = purpose
+        ),
+        context = ReconstructionContext(
+            requester = options.optional("requester")?.let { IdentitySubjectId(it) },
+            requiresProviderExposure = options.flag("requires-provider-exposure")
+        )
+    )
+    val packet = FipReconstructionPacketFactory.fromPlan(plan, purpose)
+
+    printObjectPacket(out, packet)
+    writeArtifactIfRequested(
+        options = options,
+        artifact = OperationArtifactFactory.fipReconstructionPacket(packet),
+        out = out
+    )
+    return 0
+}
+
 private fun writeBack(args: List<String>, out: PrintStream): Int {
     val options = parseOptions(args)
     val repository = repositoryFor(options)
@@ -386,6 +566,9 @@ private fun repositoryFor(options: CliOptions): FileIdentityShardRepository =
 private fun graphMapRepositoryFor(options: CliOptions): FileShardGraphMapRepository =
     FileShardGraphMapRepository(Path.of(options.required("store")))
 
+private fun objectManifestRepositoryFor(options: CliOptions): FileFipObjectManifestRepository =
+    FileFipObjectManifestRepository(Path.of(options.required("store")))
+
 private fun contentProtectionFor(options: CliOptions): ContentProtection =
     when (options.optional("content-mode") ?: "PLAINTEXT") {
         "PLAINTEXT" -> PlaintextContentProtection
@@ -446,6 +629,48 @@ private fun printGraphMap(out: PrintStream, subjectId: IdentitySubjectId, graphM
             "link fromShardId=${link.fromShardId.value} toShardId=${link.toShardId.value} weight=${link.weight}"
         )
     }
+}
+
+private fun printObjectManifest(out: PrintStream, manifest: FipObjectManifest) {
+    out.println(
+        "objectManifest objectId=${manifest.objectId.value} name=${manifest.name} " +
+            "assetType=${manifest.assetType.value} owner=${manifest.owner.value}"
+    )
+    out.println("sensitivities=${manifest.sensitivityLabels.sorted().joinToString(",")}")
+    out.println("relatedShardIds=${manifest.relatedShardIds.sortedBy { it.value }.joinToString(",") { it.value }}")
+    out.println("definedViews=${manifest.policy.definedViews.sortedBy { it.value }.joinToString(",") { it.value }}")
+    out.println("allowedViews=${manifest.policy.allowedViews.sortedBy { it.value }.joinToString(",") { it.value }}")
+    out.println("providerExposurePosture=${manifest.policy.providerExposurePolicy.posture.name}")
+    out.println("providerOutputAuthority=${manifest.policy.providerExposurePolicy.providerOutputAuthority.name}")
+    out.println("auditRequired=${manifest.policy.auditRequired}")
+    manifest.policy.viewPolicies.values.sortedBy { it.view.value }.forEach { viewPolicy ->
+        out.println(
+            "viewPolicy view=${viewPolicy.view.value} " +
+                "metadataLevels=${viewPolicy.includedMetadataLevels.sortedBy { it.name }.joinToString(",") { it.name }} " +
+                "reconstructionAllowed=${viewPolicy.reconstructionAllowed}"
+        )
+    }
+}
+
+private fun printObjectPacket(out: PrintStream, packet: FipReconstructionPacket) {
+    out.println("packetType=FIP_RECONSTRUCTION_PACKET_V1")
+    out.println("objectId=${packet.objectId.value}")
+    out.println("requestedView=${packet.requestedView.value}")
+    out.println("allowedUse=${packet.allowedUse.value}")
+    out.println("status=${packet.status.name}")
+    out.println("isApproved=${packet.isApproved}")
+    out.println("denialReasons=${packet.denialReasons.sortedBy { it.name }.joinToString(",") { it.name }}")
+    out.println("blockedReasons=${packet.blockedReasons.sortedBy { it.name }.joinToString(",") { it.name }}")
+    out.println("selectedShardCount=${packet.selectedShardIds.size}")
+    packet.selectedShardIds.sortedBy { it.value }.forEach { out.println("selectedShardId=${it.value}") }
+    out.println("selectedMetadataLevels=${packet.selectedMetadataLevels.sortedBy { it.name }.joinToString(",") { it.name }}")
+    out.println("excludedMetadataLevels=${packet.excludedMetadataLevels.sortedBy { it.name }.joinToString(",") { it.name }}")
+    out.println("providerExposurePosture=${packet.providerExposurePosture.name}")
+    out.println("providerOutputAuthority=${packet.providerOutputAuthority.name}")
+    out.println("auditRequired=${packet.auditRequired}")
+    out.println("traceId=${packet.traceId}")
+    out.println("traceStatus=${packet.traceStatus.name}")
+    out.println("traceGeneratedAt=${packet.traceGeneratedAt ?: ""}")
 }
 
 private fun String.toShardIdPair(optionName: String): Pair<IdentityShardId, IdentityShardId> {
@@ -514,6 +739,9 @@ private fun String?.csvValues(): Set<String> =
 private fun String.toShardTypeSet(): Set<ShardType> =
     csvValues().map { ShardType.valueOf(it) }.toSet()
 
+private fun String.toMetadataLevelSet(): Set<FipObjectMetadataLevel> =
+    csvValues().map { FipObjectMetadataLevel.valueOf(it) }.toSet()
+
 private fun printUsage(out: PrintStream) {
     out.println("FIP CLI v${FipVersion.VALUE}")
     out.println("Commands:")
@@ -527,4 +755,10 @@ private fun printUsage(out: PrintStream) {
     out.println("  save-graph-map --store <dir> --subject <subject> [--node <shardId>:<ShardType>:<priority>] [--node-link <fromShardId>:<toShardId>] [--link <fromShardId>:<toShardId>:<weight>]")
     out.println("  load-graph-map --store <dir> --subject <subject>")
     out.println("  rebuild-graph-map --store <dir> --subject <subject>")
+    out.println("  put-object-manifest --store <dir> --object-id <id> --name <name> --asset-type <type> --owner <owner> --view <viewName> [--denied-view <viewName>] [--sensitivity <label>] [--shard-id <id>] [--metadata-level <LEVEL>] [--metadata-levels A,B] [--provider-exposure-posture <posture>] [--audit-required true|false]")
+    out.println("  load-object-manifest --store <dir> --object-id <id>")
+    out.println("  list-object-manifests --store <dir>")
+    out.println("  delete-object-manifest --store <dir> --object-id <id>")
+    out.println("  plan-object-reconstruction --store <dir> --object-id <id> --view <viewName> [--purpose <purpose>] [--requester <subject>] [--requires-provider-exposure]")
+    out.println("  build-object-packet --store <dir> --object-id <id> --view <viewName> [--purpose <purpose>] [--requester <subject>] [--requires-provider-exposure] [--artifact-out <path>]")
 }

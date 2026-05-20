@@ -2,6 +2,7 @@ package com.innovationstrategies.fip.core.artifact
 
 import com.innovationstrategies.fip.core.domain.ReconstructionResult
 import com.innovationstrategies.fip.core.integrity.IntegrityCheckResult
+import com.innovationstrategies.fip.core.vault.FipReconstructionPacket
 import com.innovationstrategies.fip.core.writeback.WriteBackResult
 import java.time.Instant
 
@@ -38,7 +39,8 @@ data class OperationArtifactEntry(
 enum class OperationArtifactType {
     RECONSTRUCTION,
     WRITE_BACK,
-    INTEGRITY_CHECK
+    INTEGRITY_CHECK,
+    FIP_RECONSTRUCTION_PACKET
 }
 
 object OperationArtifactFactory {
@@ -233,6 +235,52 @@ object OperationArtifactFactory {
                             )
                         )
                     }
+                }
+            }
+        )
+
+    fun fipReconstructionPacket(
+        packet: FipReconstructionPacket,
+        generatedAt: Instant = Instant.now()
+    ): OperationArtifact =
+        OperationArtifact(
+            operationType = OperationArtifactType.FIP_RECONSTRUCTION_PACKET,
+            generatedAt = generatedAt,
+            fields = linkedMapOf(
+                "objectId" to packet.objectId.value,
+                "requestedView" to packet.requestedView.value,
+                "allowedUse" to packet.allowedUse.value,
+                "status" to packet.status.name,
+                "isApproved" to packet.isApproved.toString(),
+                "denialReasons" to packet.denialReasons.sortedBy { it.name }.joinToString(",") { it.name },
+                "blockedReasons" to packet.blockedReasons.sortedBy { it.name }.joinToString(",") { it.name },
+                "selectedShardCount" to packet.selectedShardIds.size.toString(),
+                "selectedMetadataLevels" to packet.selectedMetadataLevels.sortedBy { it.name }
+                    .joinToString(",") { it.name },
+                "excludedMetadataLevels" to packet.excludedMetadataLevels.sortedBy { it.name }
+                    .joinToString(",") { it.name },
+                "providerExposurePosture" to packet.providerExposurePosture.name,
+                "providerOutputAuthority" to packet.providerOutputAuthority.name,
+                "auditRequired" to packet.auditRequired.toString(),
+                "traceId" to packet.traceId,
+                "traceStatus" to packet.traceStatus.name,
+                "traceGeneratedAt" to packet.traceGeneratedAt?.toString().orEmpty()
+            ),
+            entries = buildList {
+                packet.selectedShardIds.sortedBy { it.value }.forEach { shardId ->
+                    add(OperationArtifactEntry("selected-shard", linkedMapOf("shardId" to shardId.value)))
+                }
+                packet.selectedMetadataLevels.sortedBy { it.name }.forEach { level ->
+                    add(OperationArtifactEntry("selected-metadata-level", linkedMapOf("level" to level.name)))
+                }
+                packet.excludedMetadataLevels.sortedBy { it.name }.forEach { level ->
+                    add(OperationArtifactEntry("excluded-metadata-level", linkedMapOf("level" to level.name)))
+                }
+                packet.denialReasons.sortedBy { it.name }.forEach { reason ->
+                    add(OperationArtifactEntry("denial-reason", linkedMapOf("reason" to reason.name)))
+                }
+                packet.blockedReasons.sortedBy { it.name }.forEach { reason ->
+                    add(OperationArtifactEntry("blocked-reason", linkedMapOf("reason" to reason.name)))
                 }
             }
         )

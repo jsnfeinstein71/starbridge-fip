@@ -8,6 +8,9 @@ It is infrastructure, not generic chatbot memory.
 For future architecture-sensitive FIP work, read
 `docs/canonical/fip-master-spine.md` first.
 
+Architecture-sensitive work should also read
+`docs/canonical/ecosystem-alignment-pointer.md`.
+
 
 
 \## Invention and positioning alignment

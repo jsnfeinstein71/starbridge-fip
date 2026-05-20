@@ -124,3 +124,57 @@ To export integrity evidence, pass `--artifact-out <path>`. The artifact records
 ```bash
 ./gradlew :fip-cli:run --args="check-integrity --store ./data/fip-shards --artifact-out ./data/fip-artifacts/integrity-001.properties"
 ```
+
+## Put An Object Manifest
+
+FIP Vault object manifests are persisted file-backed records for governed object reconstruction planning. They do not reconstruct object bytes or content.
+
+```bash
+./gradlew :fip-cli:run --args="put-object-manifest --store ./data/fip-shards --object-id object-001 --name 'Object Evidence Packet' --asset-type document-bundle --owner user-123 --sensitivity restricted --shard-id shard-core-001 --shard-id shard-prefs-001 --view analysis-preview --denied-view audit-trace --metadata-level OBSERVED --metadata-level OWNER_APPROVED --provider-exposure-posture BOUNDED_VIEW_ONLY --audit-required true"
+```
+
+## Load An Object Manifest
+
+```bash
+./gradlew :fip-cli:run --args="load-object-manifest --store ./data/fip-shards --object-id object-001"
+```
+
+## List Object Manifests
+
+```bash
+./gradlew :fip-cli:run --args="list-object-manifests --store ./data/fip-shards"
+```
+
+## Delete An Object Manifest
+
+```bash
+./gradlew :fip-cli:run --args="delete-object-manifest --store ./data/fip-shards --object-id object-001"
+```
+
+## Plan Object Reconstruction
+
+Planning previews whether a stored object manifest can become a requested view. It reports selected shard ids and metadata levels, provider exposure posture, output authority, audit requirement, and trace status. It does not output reconstructed object content.
+
+```bash
+./gradlew :fip-cli:run --args="plan-object-reconstruction --store ./data/fip-shards --object-id object-001 --view analysis-preview --purpose operator-preview --requester user-123 --requires-provider-exposure"
+```
+
+## Build Object Packet
+
+Build a structured FIP Vault reconstruction/provider exposure packet from a stored manifest and requested view. The packet is trace-ready and auditable, but still does not reconstruct full object bytes or content.
+
+```bash
+./gradlew :fip-cli:run --args="build-object-packet --store ./data/fip-shards --object-id object-001 --view analysis-preview --purpose operator-preview --requester user-123 --requires-provider-exposure"
+```
+
+To export the packet as a durable evidence artifact:
+
+```bash
+./gradlew :fip-cli:run --args="build-object-packet --store ./data/fip-shards --object-id object-001 --view analysis-preview --purpose operator-preview --artifact-out ./data/fip-artifacts/object-001-analysis-packet.properties"
+```
+
+The same stored object can produce different packet artifacts by requesting different manifest-defined views:
+
+```bash
+./gradlew :fip-cli:run --args="build-object-packet --store ./data/fip-shards --object-id object-001 --view audit-trace --purpose audit-preview --artifact-out ./data/fip-artifacts/object-001-audit-packet.properties"
+```

@@ -80,6 +80,20 @@ authorized reconstructions depending on purpose, including:
 - `public-summary`
 - `patent-sensitive-local`
 
+The first Vault implementation layer is an object manifest and view-policy
+skeleton: object identity, asset type, owner, sensitivity labels, related shard
+ids, distinct metadata levels, allowed views, provider exposure posture, audit
+requirements, and reconstruction trace hooks. This layer prepares future object
+reconstruction without implementing a mounted filesystem or full object runtime.
+
+FIP Vault now also has authorized reconstruction planning. Planning determines
+whether and how a protected object may become an authorized view by evaluating
+the manifest, requested view, policy, provider exposure posture, metadata levels,
+related shard ids, audit requirement, and trace placeholder. It does not
+reconstruct content. File-backed manifest persistence exists so stored governed
+object state can feed planning; it should remain in service of governed
+reconstruction rather than becoming the center.
+
 ## Non-Negotiable Principles
 
 - Default deny for sensitive, system, and internal metadata.
