@@ -5,6 +5,9 @@
 FIP is a standalone governed identity reconstruction engine.
 It is infrastructure, not generic chatbot memory.
 
+For future architecture-sensitive FIP work, read
+`docs/canonical/fip-master-spine.md` first.
+
 
 
 \## Invention and positioning alignment
